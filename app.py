@@ -169,32 +169,62 @@ mv_by_id = {p.id: p.market_value for p in players}
 # ---- Barra lateral: tu situación ----------------------------------------
 st.sidebar.header("💼 Tu situación")
 
-budget = st.sidebar.number_input(
-    "Dinero disponible (€)", min_value=0, value=int(budget_saved), step=250_000,
-    format="%d", key=f"budget_{budget_saved}")
-st.sidebar.caption(f"= {fmt_eur(budget)}")
-
 opciones = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
             for p in sorted(players, key=lambda x: x.nickname)}
 id_a_label = {v: k for k, v in opciones.items()}
-default_squad = [id_a_label[i] for i in roster_ids if i in id_a_label]
-sel = st.sidebar.multiselect(
-    "Tu plantilla", list(opciones.keys()), default=default_squad,
-    key=f"squad_{hash(frozenset(roster_ids))}",
-    help="Selecciónala una vez y pulsa Guardar. Se recuerda entre sesiones.")
-sel_ids = {opciones[s] for s in sel}
+configurado = bool(roster_ids)
 
-if st.sidebar.button("💾 Guardar plantilla y presupuesto", use_container_width=True):
-    c = db.connect()
-    team_state.set_roster(c, sel_ids)
-    team_state.set_budget(c, budget)
-    c.close()
-    st.sidebar.success("Guardado ✅")
-    st.rerun()
+if not configurado:
+    # ----- Configuración inicial (solo la primera vez) -----
+    st.sidebar.info("Carga tu plantilla y tu dinero **una vez**. A partir de ahí, cada "
+                    "compra o venta que registres actualiza todo solo.")
+    budget = st.sidebar.number_input(
+        "Dinero disponible (€)", min_value=0, value=int(budget_saved or 0),
+        step=250_000, format="%d")
+    st.sidebar.caption(f"= {fmt_eur(budget)}")
+    sel = st.sidebar.multiselect("Tu plantilla actual", list(opciones.keys()))
+    sel_ids = {opciones[s] for s in sel}
+    if st.sidebar.button("💾 Guardar configuración inicial", type="primary",
+                         use_container_width=True, disabled=not sel_ids):
+        c = db.connect()
+        team_state.set_roster(c, sel_ids, prices={pid: mv_by_id.get(pid, 0) for pid in sel_ids})
+        team_state.set_budget(c, budget)
+        c.close()
+        st.rerun()
+    squad_ids = sel_ids
+else:
+    # ----- Modo automático: todo se actualiza con tus compras/ventas -----
+    budget = budget_saved
+    st.sidebar.metric("💵 Dinero disponible", fmt_eur(budget))
+    st.sidebar.caption(f"👥 {len(roster_ids)} jugadores · se actualiza solo con tus "
+                       "compras y ventas")
+    squad_ids = roster_ids
 
-# La plantilla "oficial" para el análisis es la guardada; si aún no has guardado,
-# se usa lo que tengas seleccionado.
-squad_ids = roster_ids if roster_ids else sel_ids
+    with st.sidebar.expander("✏️ Corregir plantilla o dinero (manual)"):
+        st.caption("Solo para arreglar algo o meter ingresos de LaLiga. El día a día "
+                   "se lleva registrando compras/ventas en sus pestañas.")
+        default_squad = [id_a_label[i] for i in roster_ids if i in id_a_label]
+        sel = st.multiselect("Plantilla", list(opciones.keys()), default=default_squad,
+                             key=f"squad_edit_{hash(frozenset(roster_ids))}")
+        nb = st.number_input("Dinero disponible (€)", min_value=0, value=int(budget),
+                             step=250_000, format="%d", key=f"budget_edit_{budget}")
+        if st.button("Guardar cambios manuales", use_container_width=True):
+            c = db.connect()
+            team_state.set_roster(c, {opciones[s] for s in sel},
+                                  prices={opciones[s]: mv_by_id.get(opciones[s], 0) for s in sel})
+            team_state.set_budget(c, nb)
+            c.close()
+            st.rerun()
+        if st.button("🗑️ Reiniciar todo", use_container_width=True):
+            c = db.connect()
+            team_state.set_roster(c, [])
+            team_state.set_budget(c, 0)
+            for pid in list(team_state.get_bids(c)):
+                team_state.remove_bid(c, pid)
+            for pid in list(team_state.get_listings(c)):
+                team_state.remove_listing(c, pid)
+            c.close()
+            st.rerun()
 
 with st.sidebar.expander("⚙️ Ajustar pesos del análisis"):
     w_rent = st.slider("Rentabilidad (pts/M€)", 0.0, 1.0, 0.30, 0.05)
