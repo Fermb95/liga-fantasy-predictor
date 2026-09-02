@@ -56,6 +56,23 @@ CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Tu plantilla real (los jugadores que tienes ahora mismo).
+CREATE TABLE IF NOT EXISTS roster (
+    player_id      INTEGER PRIMARY KEY,
+    purchase_price INTEGER,   -- lo que pagaste (o su valor al añadirlo)
+    clause         INTEGER,   -- cláusula de blindaje actual
+    added_at       TEXT
+);
+
+-- Historial de compras y ventas.
+CREATE TABLE IF NOT EXISTS transactions (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    player_id INTEGER,
+    kind      TEXT,     -- 'buy' | 'sell'
+    price     INTEGER,
+    ts        TEXT
+);
 """
 
 
