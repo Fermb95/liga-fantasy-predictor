@@ -28,15 +28,22 @@ python -m src.ingest
    lateral. La app te da COMPRAR / VENDER / IGNORAR.
 2. **Con tu cuenta oficial** (recomendado): inicia sesión en la barra lateral y
    se autocargan tu dinero, tu plantilla y **el mercado concreto de tu liga**
-   (pestaña *🛒 Mercado de tu liga* → a quién pujar hoy).
+   (pestaña *🛒 Mercado de tu liga* → a quién pujar hoy). Elige tu método:
+   - **Con email y contraseña**: rellena y pulsa *Iniciar sesión*.
+   - **Con Google** (no tienes contraseña): pulsa *1 · Generar enlace de acceso*,
+     abre el enlace (mejor en un ordenador), entra con Google y acepta. Al final
+     el navegador intentará abrir una dirección `authredirect://…` y dará un
+     error/aviso: **es normal**. Copia esa dirección completa de la barra y
+     pégala en el paso 3 → *Conectar*. Este método te da sesión para días
+     (se renueva sola con el refresh token).
 
 ### Seguridad del login
 
-- Tu contraseña se envía **solo** al servidor oficial de LaLiga por HTTPS.
-- **No se guarda** en disco ni en logs: solo se conservan los tokens en la sesión.
-- Si entras a LaLiga **con Google**, el login por contraseña no funciona: usa el
-  desplegable *"¿Entras con Google? Pega tu token"* (token Bearer desde el
-  navegador: F12 → Network).
+- Tu contraseña (si la usas) se envía **solo** al servidor oficial de LaLiga por HTTPS.
+- **No se guarda** contraseña en disco ni en logs: solo se conservan los tokens
+  en la sesión de tu navegador.
+- El login con Google usa el flujo estándar OAuth 2.0 *Authorization Code + PKCE*
+  contra la página oficial de LaLiga.
 
 ### Verificar el login con tu cuenta (opcional)
 

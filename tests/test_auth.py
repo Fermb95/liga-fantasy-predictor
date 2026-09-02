@@ -75,6 +75,60 @@ def test_refresh_usa_grant_refresh_token(monkeypatch):
     assert capturado["data"]["refresh_token"] == "mi-refresh"
 
 
+# ---- Flujo Google (Authorization Code + PKCE) -------------------------------
+def test_make_pkce_verifier_y_challenge():
+    v, c = auth.make_pkce()
+    assert v and c and v != c
+    assert "=" not in c  # base64url sin padding
+    v2, c2 = auth.make_pkce()
+    assert v != v2  # aleatorio
+
+
+def test_build_authorize_url_contiene_google_policy_y_pkce():
+    url = auth.build_authorize_url("CHALLENGE", "STATE", "NONCE")
+    assert auth.AUTHORIZE_BASE in url
+    assert "B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN" in url
+    assert "code_challenge=CHALLENGE" in url
+    assert "code_challenge_method=S256" in url
+    assert "response_type=code" in url
+
+
+def test_extract_code_desde_url_o_pelado():
+    assert auth.extract_code("authredirect://com.lfp.laligafantasy?code=ABC123&state=x") == "ABC123"
+    assert auth.extract_code("ABC123") == "ABC123"
+    with pytest.raises(auth.AuthError):
+        auth.extract_code("")
+
+
+def test_exchange_code_usa_authorization_code(monkeypatch):
+    capturado = {}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        capturado["url"] = url
+        capturado["data"] = data
+        return FakeResp(200, {"access_token": "A", "refresh_token": "R", "expires_in": 3600})
+
+    monkeypatch.setattr(auth.requests, "post", fake_post)
+    tb = auth.exchange_code("CODE", "VERIFIER")
+    assert tb.access_token == "A" and tb.refresh_token == "R"
+    assert tb.policy == auth.SIGNIN_POLICY
+    assert capturado["data"]["grant_type"] == "authorization_code"
+    assert capturado["data"]["code_verifier"] == "VERIFIER"
+    assert "B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN" in capturado["url"]
+
+
+def test_refresh_respeta_politica(monkeypatch):
+    capturado = {}
+
+    def fake_post(url, data=None, headers=None, timeout=None):
+        capturado["url"] = url
+        return FakeResp(200, {"access_token": "N", "expires_in": 3600})
+
+    monkeypatch.setattr(auth.requests, "post", fake_post)
+    auth.refresh("r", policy=auth.SIGNIN_POLICY)
+    assert "B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN" in capturado["url"]
+
+
 # ---- Test real: SOLO si defines credenciales por entorno (las manejas TÚ) ----
 @pytest.mark.live
 def test_login_real_si_hay_credenciales():

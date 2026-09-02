@@ -9,7 +9,6 @@ Actualizar datos: botón 🔄 dentro de la app (llama a ingest.run_ingest).
 from __future__ import annotations
 
 import datetime as dt
-import time
 
 import pandas as pd
 import streamlit as st
@@ -158,7 +157,7 @@ if not players:
 def token_provider() -> str:
     tb: auth.TokenBundle = st.session_state["token"]
     if tb.is_expired and tb.refresh_token:
-        tb = auth.refresh(tb.refresh_token)
+        tb = auth.refresh(tb.refresh_token, tb.policy)
         st.session_state["token"] = tb
     return tb.access_token
 
@@ -169,24 +168,56 @@ mercado_liga = None  # entradas del mercado de tu liga (si estás conectado)
 
 if not conectado:
     st.sidebar.caption("Conéctate para cargar tu dinero, tu plantilla y el mercado "
-                       "de tu liga automáticamente. Tu contraseña va solo a LaLiga.")
-    with st.sidebar.form("login"):
-        email = st.text_input("Email de LaLiga Fantasy")
-        pwd = st.text_input("Contraseña", type="password")
-        entrar = st.form_submit_button("Iniciar sesión", use_container_width=True)
-    if entrar:
-        try:
-            st.session_state["token"] = auth.login(email, pwd)
-            st.rerun()
-        except auth.AuthError as e:
-            st.sidebar.error(str(e))
-    with st.sidebar.expander("¿Entras con Google? Pega tu token"):
-        st.caption("Inicia sesión en la web oficial, abre las herramientas de "
-                   "desarrollador (F12) → Network → copia el token 'Bearer'.")
-        tok = st.text_area("Bearer token", height=80)
-        if st.button("Usar token") and tok.strip():
-            st.session_state["token"] = auth.TokenBundle(tok.strip(), None, time.time() + 3300)
-            st.rerun()
+                       "de tu liga automáticamente. Tus datos van solo a LaLiga.")
+
+    metodo = st.sidebar.radio(
+        "¿Cómo entras a LaLiga Fantasy?",
+        ["Con Google", "Con email y contraseña"],
+        help="Elige lo mismo que usas en la app oficial.")
+
+    if metodo == "Con email y contraseña":
+        with st.sidebar.form("login"):
+            email = st.text_input("Email de LaLiga Fantasy")
+            pwd = st.text_input("Contraseña", type="password")
+            entrar = st.form_submit_button("Iniciar sesión", use_container_width=True)
+        if entrar:
+            try:
+                st.session_state["token"] = auth.login(email, pwd)
+                st.rerun()
+            except auth.AuthError as e:
+                st.sidebar.error(str(e))
+    else:
+        # Flujo Google (Authorization Code + PKCE), en 3 pasos.
+        if "auth_url" not in st.session_state:
+            if st.sidebar.button("1 · Generar enlace de acceso", use_container_width=True):
+                verifier, challenge = auth.make_pkce()
+                state = auth.make_state()
+                st.session_state["pkce_verifier"] = verifier
+                st.session_state["auth_url"] = auth.build_authorize_url(challenge, state, state)
+                st.rerun()
+        else:
+            st.sidebar.markdown(f"**2 · [👉 Abrir login de LaLiga]({st.session_state['auth_url']})**")
+            st.sidebar.caption(
+                "Ábrelo (mejor en un ordenador), entra con Google y acepta. Al final el "
+                "navegador intentará abrir una dirección que empieza por `authredirect://…` "
+                "y mostrará un error o un aviso: **es normal**. Copia esa dirección completa "
+                "de la barra de direcciones (o el trozo tras `code=`) y pégala aquí abajo.")
+            pegado = st.sidebar.text_area("3 · Pega aquí la dirección authredirect://…", height=80)
+            c_ok, c_cancel = st.sidebar.columns(2)
+            if c_ok.button("Conectar", type="primary", use_container_width=True) and pegado.strip():
+                try:
+                    code = auth.extract_code(pegado)
+                    st.session_state["token"] = auth.exchange_code(
+                        code, st.session_state["pkce_verifier"])
+                    for k in ("auth_url", "pkce_verifier"):
+                        st.session_state.pop(k, None)
+                    st.rerun()
+                except auth.AuthError as e:
+                    st.sidebar.error(str(e))
+            if c_cancel.button("Cancelar", use_container_width=True):
+                for k in ("auth_url", "pkce_verifier"):
+                    st.session_state.pop(k, None)
+                st.rerun()
 else:
     if st.sidebar.button("Cerrar sesión", use_container_width=True):
         for k in ("token", "leagues", "league_key", "my_team", "my_market"):
