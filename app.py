@@ -427,26 +427,50 @@ with tab_dinero:
               help="Disponible + valor de mercado de lo que tienes en venta.")
 
     st.markdown("### 📌 Pujas activas (dinero retenido)")
+    st.caption("Edita la puja si la cambiaste; pulsa ✅ Comprado si te lo llevaste "
+               "(entra en tu plantilla y se resta el dinero).")
     if active_bids:
         for pid, amount in active_bids.items():
             nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
-            col1, col2 = st.columns([5, 1])
-            col1.write(f"• **{nm}** — pujando {fmt_eur(amount)}")
-            if col2.button("Quitar", key=f"delbid_{pid}"):
+            st.markdown(f"**{nm}**")
+            e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
+            nuevo = e0.number_input("Puja (€)", min_value=0, value=int(amount), step=100_000,
+                                    format="%d", key=f"bidamt_{pid}", label_visibility="collapsed")
+            if e1.button("✅ Comprado", key=f"buy_{pid}", use_container_width=True):
+                c = db.connect()
+                team_state.remove_bid(c, pid)
+                team_state.buy_player(c, pid, nuevo)
+                c.close(); st.rerun()
+            if e2.button("💾 Guardar", key=f"savebid_{pid}", use_container_width=True):
+                c = db.connect(); team_state.add_bid(c, pid, nuevo); c.close(); st.rerun()
+            if e3.button("🗑️", key=f"delbid_{pid}", use_container_width=True):
                 c = db.connect(); team_state.remove_bid(c, pid); c.close(); st.rerun()
+            st.divider()
     else:
         st.caption("No tienes pujas anotadas. Anótalas desde la pestaña 🔎 Fichajes.")
 
     st.markdown("### 🏷️ Jugadores que tienes en venta")
+    st.caption("Edita el precio si lo cambiaste; pulsa ✅ Vendido cuando aceptes una "
+               "oferta (sale de tu plantilla y se suma el dinero).")
     if active_listings:
         for pid, ask in active_listings.items():
             s = score_por_id.get(pid)
             nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
             minimo = advisor.sell_advice(s).min_accept if s else 0
-            col1, col2 = st.columns([5, 1])
-            col1.write(f"• **{nm}** — pides {fmt_eur(ask)} · mínimo a aceptar {fmt_eur(minimo)}")
-            if col2.button("Quitar", key=f"dellist_{pid}"):
+            st.markdown(f"**{nm}** · mínimo a aceptar {fmt_eur(minimo)}")
+            e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
+            nuevo = e0.number_input("Precio (€)", min_value=0, value=int(ask), step=100_000,
+                                    format="%d", key=f"askamt_{pid}", label_visibility="collapsed")
+            if e1.button("✅ Vendido", key=f"sold_{pid}", use_container_width=True):
+                c = db.connect()
+                team_state.remove_listing(c, pid)
+                team_state.sell_player(c, pid, nuevo)
+                c.close(); st.rerun()
+            if e2.button("💾 Guardar", key=f"savelist_{pid}", use_container_width=True):
+                c = db.connect(); team_state.add_listing(c, pid, nuevo); c.close(); st.rerun()
+            if e3.button("🗑️", key=f"dellist_{pid}", use_container_width=True):
                 c = db.connect(); team_state.remove_listing(c, pid); c.close(); st.rerun()
+            st.divider()
     else:
         st.caption("No tienes jugadores en venta. Ponlos en venta desde la pestaña 🧮 Tu plantilla.")
 
