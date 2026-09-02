@@ -26,24 +26,39 @@ python -m src.ingest
 
 1. **Sin cuenta**: mete tu dinero disponible y marca tu plantilla en la barra
    lateral. La app te da COMPRAR / VENDER / IGNORAR.
-2. **Con tu cuenta oficial** (recomendado): inicia sesión en la barra lateral y
-   se autocargan tu dinero, tu plantilla y **el mercado concreto de tu liga**
-   (pestaña *🛒 Mercado de tu liga* → a quién pujar hoy). Elige tu método:
+2. **Con tu cuenta oficial**: inicia sesión en la barra lateral y se autocargan
+   tu dinero, tu plantilla y **el mercado concreto de tu liga** (pestaña
+   *🛒 Mercado de tu liga* → a quién pujar hoy). Dos métodos:
    - **Con email y contraseña**: rellena y pulsa *Iniciar sesión*.
-   - **Con Google** (no tienes contraseña): pulsa *1 · Generar enlace de acceso*,
-     abre el enlace (mejor en un ordenador), entra con Google y acepta. Al final
-     el navegador intentará abrir una dirección `authredirect://…` y dará un
-     error/aviso: **es normal**. Copia esa dirección completa de la barra y
-     pégala en el paso 3 → *Conectar*. Este método te da sesión para días
-     (se renueva sola con el refresh token).
+   - **Pegar token** (cuentas con Google): captura el token de la app móvil (ver
+     abajo) y pégalo. *Nota: el login con Google desde el navegador no es posible
+     porque LaLiga solo lo permite en sus apps oficiales.*
+
+### Capturar el token desde la app móvil (cuentas con Google)
+
+El token es un texto largo que empieza por `eyJ…`. Se saca interceptando una
+petición de la app oficial a `fantasy-api.llt-services.com` con una herramienta
+gratuita. Caduca en ~1 h, así que se vuelve a pegar cuando expire.
+
+**Android (con HTTP Toolkit, gratis):**
+1. Instala **HTTP Toolkit** en tu PC (https://httptoolkit.com) y en el móvil.
+2. Conéctalos (por WiFi o ADB, la app te guía) e intercepta la app *LALIGA FANTASY*.
+3. Abre la app oficial y navega (entra a tu liga).
+4. En HTTP Toolkit, busca una petición a `fantasy-api.llt-services.com` → pestaña
+   *Headers* → copia el valor de `Authorization` (lo que va tras `Bearer `).
+5. Pégalo en la app, método *Pegar token* → *Conectar*.
+
+**iPhone (con un proxy tipo Proxyman/Charles):**
+1. Instala Proxyman en el PC; configura el proxy WiFi del iPhone hacia el PC.
+2. Instala y **confía** el certificado de Proxyman en el iPhone
+   (Ajustes → General → Información → Ajustes de certificados de confianza).
+3. Abre la app oficial y navega; en Proxyman busca `fantasy-api.llt-services.com`
+   y copia la cabecera `Authorization: Bearer …`.
 
 ### Seguridad del login
 
 - Tu contraseña (si la usas) se envía **solo** al servidor oficial de LaLiga por HTTPS.
-- **No se guarda** contraseña en disco ni en logs: solo se conservan los tokens
-  en la sesión de tu navegador.
-- El login con Google usa el flujo estándar OAuth 2.0 *Authorization Code + PKCE*
-  contra la página oficial de LaLiga.
+- **No se guarda** contraseña ni token en disco: solo en la sesión de tu navegador.
 
 ### Verificar el login con tu cuenta (opcional)
 

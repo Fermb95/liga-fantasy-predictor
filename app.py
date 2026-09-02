@@ -171,9 +171,10 @@ if not conectado:
                        "de tu liga automáticamente. Tus datos van solo a LaLiga.")
 
     metodo = st.sidebar.radio(
-        "¿Cómo entras a LaLiga Fantasy?",
-        ["Con Google", "Con email y contraseña"],
-        help="Elige lo mismo que usas en la app oficial.")
+        "¿Cómo quieres entrar?",
+        ["Pegar token (cuenta con Google)", "Con email y contraseña"],
+        help="Si entras a LaLiga con Google, usa 'Pegar token' (el login web con "
+             "Google no es posible por restricciones de LaLiga).")
 
     if metodo == "Con email y contraseña":
         with st.sidebar.form("login"):
@@ -187,37 +188,16 @@ if not conectado:
             except auth.AuthError as e:
                 st.sidebar.error(str(e))
     else:
-        # Flujo Google (Authorization Code + PKCE), en 3 pasos.
-        if "auth_url" not in st.session_state:
-            if st.sidebar.button("1 · Generar enlace de acceso", use_container_width=True):
-                verifier, challenge = auth.make_pkce()
-                state = auth.make_state()
-                st.session_state["pkce_verifier"] = verifier
-                st.session_state["auth_url"] = auth.build_authorize_url(challenge, state, state)
+        st.sidebar.caption(
+            "Pega aquí el token que capturaste de la app móvil (empieza por `eyJ…`; "
+            "vale con o sin `Bearer ` delante). Ver el README para capturarlo.")
+        tok = st.sidebar.text_area("Token de acceso", height=100)
+        if st.sidebar.button("Conectar", type="primary", use_container_width=True) and tok.strip():
+            try:
+                st.session_state["token"] = auth.token_from_pasted(tok)
                 st.rerun()
-        else:
-            st.sidebar.markdown(f"**2 · [👉 Abrir login de LaLiga]({st.session_state['auth_url']})**")
-            st.sidebar.caption(
-                "Ábrelo (mejor en un ordenador), entra con Google y acepta. Al final el "
-                "navegador intentará abrir una dirección que empieza por `authredirect://…` "
-                "y mostrará un error o un aviso: **es normal**. Copia esa dirección completa "
-                "de la barra de direcciones (o el trozo tras `code=`) y pégala aquí abajo.")
-            pegado = st.sidebar.text_area("3 · Pega aquí la dirección authredirect://…", height=80)
-            c_ok, c_cancel = st.sidebar.columns(2)
-            if c_ok.button("Conectar", type="primary", use_container_width=True) and pegado.strip():
-                try:
-                    code = auth.extract_code(pegado)
-                    st.session_state["token"] = auth.exchange_code(
-                        code, st.session_state["pkce_verifier"])
-                    for k in ("auth_url", "pkce_verifier"):
-                        st.session_state.pop(k, None)
-                    st.rerun()
-                except auth.AuthError as e:
-                    st.sidebar.error(str(e))
-            if c_cancel.button("Cancelar", use_container_width=True):
-                for k in ("auth_url", "pkce_verifier"):
-                    st.session_state.pop(k, None)
-                st.rerun()
+            except auth.AuthError as e:
+                st.sidebar.error(str(e))
 else:
     if st.sidebar.button("Cerrar sesión", use_container_width=True):
         for k in ("token", "leagues", "league_key", "my_team", "my_market"):

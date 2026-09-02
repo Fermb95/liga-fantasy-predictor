@@ -164,6 +164,40 @@ def extract_code(redirect_url_or_code: str) -> str:
     return s  # se asume que es el código directamente
 
 
+def token_from_pasted(raw: str) -> TokenBundle:
+    """Crea un TokenBundle a partir de un access_token pegado a mano.
+
+    Acepta el token pelado o precedido de 'Authorization:'/'Bearer '. Intenta
+    leer la caducidad real (claim 'exp') del propio JWT.
+    """
+    s = (raw or "").strip().strip('"').strip("'")
+    for pref in ("authorization:", "Authorization:"):
+        if s.lower().startswith(pref.lower()):
+            s = s[len(pref):].strip()
+    if s.lower().startswith("bearer "):
+        s = s[7:].strip()
+    s = s.strip()
+    if not s or s.count(".") < 2:
+        raise AuthError("Eso no parece un token válido. Debe ser un texto largo "
+                        "tipo 'eyJ...' (opcionalmente con 'Bearer ' delante).")
+    exp = _jwt_exp(s)
+    expires_at = exp if exp else (time.time() + 3000)  # ~50 min si no hay exp
+    return TokenBundle(access_token=s, refresh_token=None,
+                       expires_at=expires_at, policy=SIGNIN_POLICY)
+
+
+def _jwt_exp(token: str) -> float | None:
+    """Lee el claim 'exp' (epoch) del payload de un JWT, si es posible."""
+    try:
+        payload_b64 = token.split(".")[1]
+        payload_b64 += "=" * (-len(payload_b64) % 4)  # padding
+        import json
+        data = json.loads(base64.urlsafe_b64decode(payload_b64))
+        return float(data["exp"]) if "exp" in data else None
+    except Exception:
+        return None
+
+
 def exchange_code(code: str, code_verifier: str) -> TokenBundle:
     """Canjea el `code` por tokens (incluye refresh_token)."""
     if not code or not code_verifier:
