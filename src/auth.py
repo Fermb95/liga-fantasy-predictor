@@ -32,7 +32,8 @@ AUTHORIZE_BASE = f"{_BASE}/authorize"
 ROPC_POLICY = "B2C_1A_ResourceOwnerv2"                 # email + contraseña
 SIGNIN_POLICY = "B2C_1A_5ULAIP_PARAMETRIZED_SIGNIN"    # interactivo (Google)
 REDIRECT_URI = "authredirect://com.lfp.laligafantasy"
-SCOPE = f"openid {CLIENT_ID} offline_access"
+SCOPE = f"openid {CLIENT_ID} offline_access"   # flujo email/contraseña (ROPC)
+GOOGLE_SCOPE = "openid offline_access"          # flujo interactivo (Google) y refresh
 
 
 class AuthError(RuntimeError):
@@ -110,7 +111,7 @@ def refresh(refresh_token: str, policy: str = ROPC_POLICY) -> TokenBundle:
     return _post_token({
         "grant_type": "refresh_token",
         "client_id": CLIENT_ID,
-        "scope": SCOPE,
+        "scope": GOOGLE_SCOPE,
         "refresh_token": refresh_token,
     }, policy)
 
@@ -138,7 +139,7 @@ def build_authorize_url(code_challenge: str, state: str, nonce: str) -> str:
         "client_id": CLIENT_ID,
         "response_type": "code",
         "redirect_uri": REDIRECT_URI,
-        "scope": SCOPE,
+        "scope": GOOGLE_SCOPE,
         "state": state,
         "nonce": nonce,
         "code_challenge": code_challenge,
@@ -173,5 +174,5 @@ def exchange_code(code: str, code_verifier: str) -> TokenBundle:
         "code": code,
         "redirect_uri": REDIRECT_URI,
         "code_verifier": code_verifier,
-        "scope": SCOPE,
+        "scope": GOOGLE_SCOPE,
     }, SIGNIN_POLICY)
