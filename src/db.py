@@ -65,6 +65,10 @@ def connect(db_path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
     conn = sqlite3.connect(str(path))
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA foreign_keys = ON")
+    # Asegura el esquema en cada conexión (idempotente). Evita errores de
+    # "no such table" en un despliegue nuevo con la BD aún vacía.
+    conn.executescript(SCHEMA)
+    conn.commit()
     return conn
 
 
