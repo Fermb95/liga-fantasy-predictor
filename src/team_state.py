@@ -120,3 +120,70 @@ def get_transactions(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         (limit,),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+# ---- Pujas activas (dinero retenido en el mercado) ----------------------
+def add_bid(conn: sqlite3.Connection, player_id: int, amount: int) -> None:
+    conn.execute(
+        """INSERT INTO bids (player_id, amount, ts) VALUES (?, ?, ?)
+           ON CONFLICT(player_id) DO UPDATE SET amount=excluded.amount, ts=excluded.ts""",
+        (player_id, int(amount), dt.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+def remove_bid(conn: sqlite3.Connection, player_id: int) -> None:
+    conn.execute("DELETE FROM bids WHERE player_id=?", (player_id,))
+    conn.commit()
+
+
+def get_bids(conn: sqlite3.Connection) -> dict[int, int]:
+    return {r["player_id"]: r["amount"] for r in conn.execute("SELECT player_id, amount FROM bids")}
+
+
+# ---- Ventas activas (jugadores tuyos en el mercado) ---------------------
+def add_listing(conn: sqlite3.Connection, player_id: int, ask_price: int) -> None:
+    conn.execute(
+        """INSERT INTO listings (player_id, ask_price, ts) VALUES (?, ?, ?)
+           ON CONFLICT(player_id) DO UPDATE SET ask_price=excluded.ask_price, ts=excluded.ts""",
+        (player_id, int(ask_price), dt.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+def remove_listing(conn: sqlite3.Connection, player_id: int) -> None:
+    conn.execute("DELETE FROM listings WHERE player_id=?", (player_id,))
+    conn.commit()
+
+
+def get_listings(conn: sqlite3.Connection) -> dict[int, int]:
+    return {r["player_id"]: r["ask_price"] for r in conn.execute(
+        "SELECT player_id, ask_price FROM listings")}
+
+
+@dataclass
+class BudgetView:
+    disponible: int          # dinero libre ahora (lo que muestra LaLiga)
+    comprometido_pujas: int  # dinero retenido en pujas activas
+    si_fallan_pujas: int     # disponible + pujas (si te las devuelven)
+    en_venta_pedido: int     # suma de precios que pides por lo que tienes en venta
+    en_venta_mercado: int    # suma del valor de mercado de lo que tienes en venta
+    si_vendo_pedido: int     # disponible + lo que pides por tus ventas
+    si_vendo_mercado: int    # disponible + valor de mercado de tus ventas (más realista)
+
+
+def budget_view(disponible: int, bids: dict[int, int], listings: dict[int, int],
+                market_value_by_id: dict[int, int]) -> BudgetView:
+    """Calcula los distintos 'presupuestos' según pujas y ventas activas."""
+    comprometido = sum(bids.values())
+    pedido = sum(listings.values())
+    mercado = sum(market_value_by_id.get(pid, 0) for pid in listings)
+    return BudgetView(
+        disponible=disponible,
+        comprometido_pujas=comprometido,
+        si_fallan_pujas=disponible + comprometido,
+        en_venta_pedido=pedido,
+        en_venta_mercado=mercado,
+        si_vendo_pedido=disponible + pedido,
+        si_vendo_mercado=disponible + mercado,
+    )

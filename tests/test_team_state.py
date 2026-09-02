@@ -65,3 +65,31 @@ def test_set_clause(conn):
     ts.set_clause(conn, 5, 12_000_000)
     e = {x.player_id: x for x in ts.get_roster(conn)}[5]
     assert e.clause == 12_000_000
+
+
+def test_pujas_activas(conn):
+    ts.add_bid(conn, 10, 3_000_000)
+    ts.add_bid(conn, 11, 2_000_000)
+    ts.add_bid(conn, 10, 3_500_000)          # actualiza, no duplica
+    assert ts.get_bids(conn) == {10: 3_500_000, 11: 2_000_000}
+    ts.remove_bid(conn, 11)
+    assert ts.get_bids(conn) == {10: 3_500_000}
+
+
+def test_ventas_activas(conn):
+    ts.add_listing(conn, 20, 8_000_000)
+    assert ts.get_listings(conn) == {20: 8_000_000}
+    ts.remove_listing(conn, 20)
+    assert ts.get_listings(conn) == {}
+
+
+def test_budget_view_escenarios():
+    bids = {10: 3_000_000, 11: 2_000_000}          # 5M retenidos
+    listings = {20: 8_000_000}                     # pides 8M
+    mv = {20: 7_000_000}                           # su valor real 7M
+    bv = ts.budget_view(4_000_000, bids, listings, mv)
+    assert bv.disponible == 4_000_000
+    assert bv.comprometido_pujas == 5_000_000
+    assert bv.si_fallan_pujas == 9_000_000         # 4M + 5M
+    assert bv.si_vendo_pedido == 12_000_000        # 4M + 8M
+    assert bv.si_vendo_mercado == 11_000_000       # 4M + 7M

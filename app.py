@@ -13,7 +13,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from src import (account, auth, db, engine, ingest, lineup, market,
+from src import (account, advisor, auth, db, engine, ingest, lineup, market,
                  recommender, team_state)
 
 POS = {1: "POR", 2: "DEF", 3: "MED", 4: "DEL", 5: "ENT"}
@@ -161,7 +161,10 @@ if not players:
 conn = db.connect()
 roster_ids = team_state.get_roster_ids(conn)
 budget_saved = team_state.get_budget(conn)
+active_bids = team_state.get_bids(conn)
+active_listings = team_state.get_listings(conn)
 conn.close()
+mv_by_id = {p.id: p.market_value for p in players}
 
 # ---- Barra lateral: tu situación ----------------------------------------
 st.sidebar.header("💼 Tu situación")
@@ -242,9 +245,11 @@ def tarjeta(s):
 
 
 # ---- Pestañas ------------------------------------------------------------
+bv = team_state.budget_view(budget, active_bids, active_listings, mv_by_id)
+
 tabs = st.tabs(["🎯 Recomendaciones", "🧢 Alineación", "🔎 Fichajes",
-                "📋 Explorar", "🧮 Tu plantilla"])
-tab_rec, tab_11, tab_fich, tab_expl, tab_plant = tabs
+                "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla"])
+tab_rec, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant = tabs
 
 # --- Recomendaciones ---
 with tab_rec:
@@ -309,49 +314,111 @@ with tab_11:
                 st.dataframe(pd.DataFrame([fila_xi(s) for s in res.bench]),
                              use_container_width=True, hide_index=True)
 
-# --- Fichajes (simulador) ---
+# --- Fichajes (asesor de puja) ---
 with tab_fich:
-    st.subheader("Simulador de fichaje")
-    st.caption("Elige a quién quieres fichar y te digo si te llega, a quién vender y qué cláusula poner.")
+    st.subheader("¿Fichar a este jugador?")
+    st.caption("Busca al jugador (lo ves en tu mercado de LaLiga) y te digo si es chollo, "
+               "hasta cuánto pujar, si te encaja y a quién vender.")
     fuera = [s for s in scores if s.player.id not in squad_ids
-             and s.player.status not in ("out_of_league",)]
+             and s.player.status != "out_of_league"]
     fuera.sort(key=lambda s: s.player.market_value, reverse=True)
     opts = {f"{s.player.nickname} · {team_name(teams, s.player.team_id)} "
             f"({POS.get(s.player.position_id,'?')}) — {fmt_eur(s.player.market_value)}": s
             for s in fuera}
-    elegido = st.selectbox("Jugador objetivo", ["—"] + list(opts.keys()))
+    busca = st.text_input("Buscar jugador objetivo")
+    lista = [k for k in opts if not busca or busca.lower() in k.lower()]
+    elegido = st.selectbox("Jugador", ["—"] + lista)
     if elegido != "—":
         target = opts[elegido]
-        plan = market.financing_plan(target, budget, squad_scores)
         adv = market.price_advice(target)
-        a, b, c = st.columns(3)
-        a.metric("Precio (puja máx.)", fmt_eur(plan.price))
-        b.metric("Tu dinero", fmt_eur(budget))
-        c.metric("Cláusula a ponerle", fmt_eur(adv.suggested_clause))
-        if plan.affordable_now:
-            st.success(f"✅ Puedes ficharlo directamente. Te quedarían "
-                       f"**{fmt_eur(plan.budget_after)}**.")
-        elif plan.feasible:
-            nombres = ", ".join(f"{s.player.nickname} (~{fmt_eur(market.price_advice(s).fair_value)})"
-                                for s in plan.sells)
-            st.warning(f"Te faltan **{fmt_eur(plan.shortfall)}**. "
-                       f"Vende para financiarlo: **{nombres}**. "
-                       f"Después te quedarían {fmt_eur(plan.budget_after)}.")
-        else:
-            st.error(f"No te llega ni vendiendo tu plantilla (te faltarían "
-                     f"{fmt_eur(plan.price - (budget + sum(market.price_advice(s).fair_value for s in plan.sells)))}).")
+        fit, motivo = advisor.team_fit(target, squad_scores)
 
-        st.markdown("**Registrar este fichaje** (actualiza tu plantilla y tu dinero):")
-        precio_real = st.number_input("Precio pagado", min_value=0, value=int(plan.price),
-                                      step=100_000, format="%d")
-        clausula = st.number_input("Cláusula que le pones (opcional)", min_value=0,
+        veredicto = {"CHOLLO": "🟢 CHOLLO — fíchalo", "MANTENER": "🟡 Correcto",
+                     "VENDER": "🔴 PASA — no rinde"}.get(target.signal, target.signal)
+        fit_emoji = {"ENCAJA": "🟢", "MEJORA": "🟢", "NO_ENCAJA": "🟠"}.get(fit, "")
+        a, b, c = st.columns(3)
+        a.metric("Veredicto", veredicto.split(" ", 1)[0], help=veredicto)
+        b.metric("Puja máxima", fmt_eur(adv.max_buy))
+        c.metric("Cláusula a ponerle", fmt_eur(adv.suggested_clause))
+        st.markdown(f"**Score {target.score}/100** · Pts esperados {lineup.expected_points(target)} · "
+                    f"Encaje {fit_emoji} **{fit}** — {motivo}")
+        if fit == "NO_ENCAJA":
+            st.info("Puede ser buen jugador, pero **ahora mismo no te aporta**: ya vas cubierto "
+                    "en esa posición. Fíchalo solo si vendes al que desplaza.")
+
+        st.markdown("---")
+        st.markdown("**Simula tu puja:**")
+        bid = st.number_input("¿Cuánto vas a pujar?", min_value=0, value=int(adv.max_buy),
+                              step=100_000, format="%d")
+        if bid > adv.max_buy:
+            st.warning(f"Ojo: estás por encima de la puja máxima recomendada ({fmt_eur(adv.max_buy)}).")
+        plan = advisor.bid_plan(target, bid, budget, squad_scores)
+
+        if plan.substitute_out:
+            st.write(f"↔️ En su puesto desplazaría a **{plan.substitute_out.player.nickname}** "
+                     f"(score {plan.substitute_out.score}).")
+        if plan.sell_substitute and plan.substitute_out:
+            st.write(f"💡 Conviene **vender a {plan.substitute_out.player.nickname}** "
+                     f"(mínimo a aceptar {fmt_eur(advisor.sell_advice(plan.substitute_out).min_accept)}).")
+        if plan.extra_sells:
+            extra = ", ".join(s.player.nickname for s in plan.extra_sells)
+            st.write(f"➕ Aún faltaría dinero: vende además **{extra}**.")
+
+        if plan.feasible:
+            st.success(f"✅ Viable. Dinero que te quedaría: **{fmt_eur(plan.cash_final)}**"
+                       + ("" if not (plan.sell_substitute or plan.extra_sells) else " (tras esas ventas)"))
+        else:
+            st.error(f"❌ No te llega ni vendiendo. Te faltarían {fmt_eur(-plan.cash_final)}.")
+
+        st.markdown("**Registrar:**")
+        r1, r2 = st.columns(2)
+        if r1.button("📌 Anotar puja (dinero retenido)", use_container_width=True):
+            c = db.connect(); team_state.add_bid(c, target.player.id, bid); c.close()
+            st.success("Puja anotada."); st.rerun()
+        clausula = st.number_input("Cláusula al comprarlo", min_value=0,
                                    value=int(adv.suggested_clause), step=100_000, format="%d")
-        if st.button("✅ Registrar compra", type="primary"):
+        if r2.button("✅ Registrar compra efectuada", type="primary", use_container_width=True):
             c = db.connect()
-            nuevo = team_state.buy_player(c, target.player.id, precio_real, clause=clausula or None)
+            team_state.remove_bid(c, target.player.id)
+            nuevo = team_state.buy_player(c, target.player.id, bid, clause=clausula or None)
             c.close()
-            st.success(f"Fichado {target.player.nickname}. Dinero restante: {fmt_eur(nuevo)}")
+            st.success(f"Fichado {target.player.nickname}. Dinero: {fmt_eur(nuevo)}")
             st.rerun()
+
+# --- Dinero (escenarios + pujas + ventas) ---
+with tab_dinero:
+    st.subheader("Tu dinero, con pujas y ventas en curso")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("💵 Disponible ahora", fmt_eur(bv.disponible),
+              help="El que muestra LaLiga (ya descontadas tus pujas retenidas).")
+    m2.metric("↩️ Si fallan mis pujas", fmt_eur(bv.si_fallan_pujas),
+              help=f"Disponible + {fmt_eur(bv.comprometido_pujas)} retenidos en pujas.")
+    m3.metric("🏷️ Si vendo lo listado", fmt_eur(bv.si_vendo_mercado),
+              help="Disponible + valor de mercado de lo que tienes en venta.")
+
+    st.markdown("### 📌 Pujas activas (dinero retenido)")
+    if active_bids:
+        for pid, amount in active_bids.items():
+            nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
+            col1, col2 = st.columns([5, 1])
+            col1.write(f"• **{nm}** — pujando {fmt_eur(amount)}")
+            if col2.button("Quitar", key=f"delbid_{pid}"):
+                c = db.connect(); team_state.remove_bid(c, pid); c.close(); st.rerun()
+    else:
+        st.caption("No tienes pujas anotadas. Anótalas desde la pestaña 🔎 Fichajes.")
+
+    st.markdown("### 🏷️ Jugadores que tienes en venta")
+    if active_listings:
+        for pid, ask in active_listings.items():
+            s = score_por_id.get(pid)
+            nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
+            minimo = advisor.sell_advice(s).min_accept if s else 0
+            col1, col2 = st.columns([5, 1])
+            col1.write(f"• **{nm}** — pides {fmt_eur(ask)} · mínimo a aceptar {fmt_eur(minimo)}")
+            if col2.button("Quitar", key=f"dellist_{pid}"):
+                c = db.connect(); team_state.remove_listing(c, pid); c.close(); st.rerun()
+    else:
+        st.caption("No tienes jugadores en venta. Ponlos en venta desde la pestaña 🧮 Tu plantilla.")
 
 # --- Explorar ---
 with tab_expl:
@@ -407,17 +474,27 @@ with tab_plant:
             })
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
 
-        st.markdown("**Registrar una venta** (actualiza tu plantilla y tu dinero):")
-        vopts = {f"{s.player.nickname} — vender por ~{fmt_eur(market.price_advice(s).sell_ask)}": s
+        st.markdown("**Vender / poner en venta un jugador:**")
+        vopts = {f"{s.player.nickname} ({POS.get(s.player.position_id,'?')})": s
                  for s in squad_scores}
-        velegido = st.selectbox("Jugador a vender", ["—"] + list(vopts.keys()))
+        velegido = st.selectbox("Jugador", ["—"] + list(vopts.keys()))
         if velegido != "—":
             sv = vopts[velegido]
-            precio_v = st.number_input("Precio de venta", min_value=0,
-                                       value=int(market.price_advice(sv).sell_ask),
+            sa = advisor.sell_advice(sv)
+            g1, g2 = st.columns(2)
+            g1.metric("💚 Buen precio de venta", fmt_eur(sa.good_price))
+            g2.metric("🚫 Mínimo a aceptar", fmt_eur(sa.min_accept),
+                      help="A ese precio te lo compra el sistema: no aceptes menos de un mánager.")
+            precio_v = st.number_input("Precio", min_value=0, value=int(sa.good_price),
                                        step=100_000, format="%d")
-            if st.button("🏷️ Registrar venta", type="primary"):
+            b1, b2 = st.columns(2)
+            if b1.button("🏷️ Poner en venta", use_container_width=True):
+                c = db.connect(); team_state.add_listing(c, sv.player.id, precio_v); c.close()
+                st.success(f"{sv.player.nickname} puesto en venta por {fmt_eur(precio_v)}.")
+                st.rerun()
+            if b2.button("✅ Registrar venta hecha", type="primary", use_container_width=True):
                 c = db.connect()
+                team_state.remove_listing(c, sv.player.id)
                 nuevo = team_state.sell_player(c, sv.player.id, precio_v)
                 c.close()
                 st.success(f"Vendido {sv.player.nickname}. Dinero: {fmt_eur(nuevo)}")

@@ -73,6 +73,20 @@ CREATE TABLE IF NOT EXISTS transactions (
     price     INTEGER,
     ts        TEXT
 );
+
+-- Pujas que tienes en curso por jugadores del mercado (dinero retenido).
+CREATE TABLE IF NOT EXISTS bids (
+    player_id INTEGER PRIMARY KEY,
+    amount    INTEGER,
+    ts        TEXT
+);
+
+-- Jugadores TUYOS que has puesto en venta, con el precio que pides.
+CREATE TABLE IF NOT EXISTS listings (
+    player_id INTEGER PRIMARY KEY,
+    ask_price INTEGER,
+    ts        TEXT
+);
 """
 
 
