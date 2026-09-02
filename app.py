@@ -13,8 +13,8 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 
-from src import (account, advisor, auth, db, engine, ingest, lineup, market,
-                 recommender, team_state)
+from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
+                 market, recommender, team_state)
 
 POS = {1: "POR", 2: "DEF", 3: "MED", 4: "DEL", 5: "ENT"}
 SIGNAL_EMOJI = {"CHOLLO": "🟢", "MANTENER": "🟡", "VENDER": "🔴"}
@@ -444,6 +444,83 @@ with tab_expl:
     st.dataframe(df_show, use_container_width=True, hide_index=True,
                  column_config={"Score": st.column_config.ProgressColumn(
                      "Score", min_value=0, max_value=100, format="%.0f")})
+
+    # ----- Comparador de jugadores -----
+    st.markdown("---")
+    st.markdown("### 🆚 Comparar jugadores")
+    st.caption("Elige varios y los ves en paralelo, ordenados por score.")
+    comp_sel = st.multiselect("Jugadores a comparar", list(opciones.keys()), key="cmp_sel")
+    if comp_sel:
+        comp = [score_por_id[opciones[k]] for k in comp_sel if opciones[k] in score_por_id]
+        comp.sort(key=lambda s: s.score, reverse=True)
+        mejor = compare.best_of(comp)
+        filas = []
+        for s in comp:
+            adv = market.price_advice(s)
+            fit, _ = advisor.team_fit(s, squad_scores)
+            filas.append({
+                "": "⭐" if mejor and s.player.id == mejor.player.id else "",
+                "Jugador": s.player.nickname,
+                "Pos": POS.get(s.player.position_id, "?"),
+                "Equipo": team_name(teams, s.player.team_id),
+                "Precio": fmt_eur(s.player.market_value),
+                "Score": s.score,
+                "Pts esp.": lineup.expected_points(s),
+                "Comprar hasta": fmt_eur(adv.max_buy),
+                "Vender por": fmt_eur(adv.sell_ask),
+                "Encaje": fit,
+                "Veredicto": s.signal,
+            })
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+    # ----- Simulador de pujas múltiples -----
+    st.markdown("---")
+    st.markdown("### 🎰 Simulador: pujar por varios a la vez")
+    st.caption("Marca a quién pujarías y con cuánto; te digo si te llega, a quién vender y si compensa.")
+    fuera_opts = {k: v for k, v in opciones.items() if v not in squad_ids}
+    multi_sel = st.multiselect("Objetivos", list(fuera_opts.keys()), key="multi_sel")
+    if multi_sel:
+        targets = []
+        cols = st.columns(min(3, len(multi_sel)))
+        for i, k in enumerate(multi_sel):
+            s = score_por_id.get(fuera_opts[k])
+            if not s:
+                continue
+            default = market.price_advice(s).max_buy
+            bid = cols[i % len(cols)].number_input(
+                f"Puja por {s.player.nickname}", min_value=0, value=int(default),
+                step=100_000, format="%d", key=f"mbid_{s.player.id}")
+            targets.append((s, int(bid)))
+        if targets:
+            plan = compare.multi_bid_plan(targets, budget, squad_scores)
+            a, b, c = st.columns(3)
+            a.metric("Coste total", fmt_eur(plan.total_cost))
+            b.metric("Tu dinero", fmt_eur(budget))
+            c.metric("Dinero después", fmt_eur(plan.cash_after))
+            if plan.affordable:
+                st.success("✅ Te llega con tu dinero, sin vender nada.")
+            elif plan.feasible:
+                nombres = ", ".join(f"{s.player.nickname} (~{fmt_eur(advisor.sell_advice(s).min_accept)})"
+                                    for s in plan.sells)
+                st.warning(f"Te faltan {fmt_eur(plan.shortfall)}. Para pujar por todos, "
+                           f"vende: **{nombres}**.")
+            else:
+                st.error("❌ No te llega ni vendiendo. Reduce pujas o quita algún objetivo.")
+
+            filas = []
+            for te in plan.targets:
+                filas.append({
+                    "Jugador": te.ps.player.nickname,
+                    "Pos": POS.get(te.ps.player.position_id, "?"),
+                    "Tu puja": fmt_eur(te.bid),
+                    "Máx recom.": fmt_eur(te.max_buy),
+                    "Veredicto": te.verdict,
+                    "Encaje": te.fit,
+                    "¿Merece?": "✅" if te.worth else "🔴",
+                })
+            st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+            for n in plan.notes:
+                st.caption(f"⚠️ {n}")
 
 # --- Tu plantilla ---
 with tab_plant:
