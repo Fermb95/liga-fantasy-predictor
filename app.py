@@ -13,9 +13,12 @@ import os
 
 import pandas as pd
 import streamlit as st
+from streamlit_local_storage import LocalStorage
 
 from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
                  market, recommender, team_state, users)
+
+SESSION_LS_KEY = "session_token"
 
 POS = {1: "POR", 2: "DEF", 3: "MED", 4: "DEL", 5: "ENT"}
 SIGNAL_EMOJI = {"CHOLLO": "🟢", "MANTENER": "🟡", "VENDER": "🔴"}
@@ -51,48 +54,120 @@ except Exception:
 
 
 # ---- Login / registro ----------------------------------------------------
+localS = LocalStorage()
+
+
+def _iniciar_sesion(uid_: int, username: str, recordar: bool):
+    st.session_state["user_id"] = uid_
+    st.session_state["username"] = (username or "").strip().lower()
+    if recordar:
+        c = db.connect()
+        # El token se escribe en el navegador tras el gate (no aquí, para que
+        # el componente de localStorage no se corte con el st.rerun()).
+        st.session_state["session_token"] = users.create_session(c, uid_)
+        c.close()
+    st.rerun()
+
+
 def _login_gate():
+    # Auto-login si hay una sesión recordada en el navegador.
+    if not st.session_state.get("user_id"):
+        tok = localS.getItem(SESSION_LS_KEY)
+        if tok:
+            c = db.connect()
+            uid_ = users.validate_session(c, tok)
+            uname = users.get_username(c, uid_) if uid_ else None
+            c.close()
+            if uid_:
+                st.session_state["user_id"] = uid_
+                st.session_state["username"] = uname
+                st.session_state["session_token"] = tok
+
     if st.session_state.get("user_id"):
         return
+
     st.title("⚽ Predictor LaLiga Fantasy")
     st.caption("Entra con tu usuario para ver y gestionar tu equipo.")
     if not db.using_turso():
         st.warning("⚠️ Turso no está configurado: las cuentas no se guardarán entre "
                    "reinicios. Añade los secrets TURSO_DATABASE_URL y TURSO_AUTH_TOKEN.")
-    tab_in, tab_up = st.tabs(["Entrar", "Crear cuenta"])
+    tab_in, tab_up, tab_fg = st.tabs(["Entrar", "Crear cuenta", "¿Olvidaste la contraseña?"])
+
     with tab_in:
         with st.form("login_form"):
             u = st.text_input("Usuario")
             p = st.text_input("Contraseña", type="password")
+            recordar = st.checkbox("Mantener sesión iniciada", value=True)
             if st.form_submit_button("Entrar", type="primary", use_container_width=True):
                 c = db.connect()
                 uid_ = users.authenticate(c, u, p)
                 c.close()
                 if uid_:
-                    st.session_state["user_id"] = uid_
-                    st.session_state["username"] = (u or "").strip().lower()
-                    st.rerun()
+                    _iniciar_sesion(uid_, u, recordar)
                 else:
                     st.error("Usuario o contraseña incorrectos.")
+
     with tab_up:
         with st.form("signup_form"):
             u2 = st.text_input("Usuario nuevo (3-20 letras/números)", key="su_u")
             p2 = st.text_input("Contraseña (mín. 4)", type="password", key="su_p")
+            st.caption("Pregunta de recuperación (por si olvidas la contraseña):")
+            rq = st.text_input("Pregunta (p. ej. ¿tu primer equipo?)", key="su_rq")
+            ra = st.text_input("Respuesta", key="su_ra")
+            recordar2 = st.checkbox("Mantener sesión iniciada", value=True, key="su_rem")
             if st.form_submit_button("Crear cuenta", use_container_width=True):
-                try:
-                    c = db.connect()
-                    uid_ = users.create_user(c, u2, p2)
-                    c.close()
-                    st.session_state["user_id"] = uid_
-                    st.session_state["username"] = (u2 or "").strip().lower()
-                    st.rerun()
-                except users.UserError as e:
-                    st.error(str(e))
+                if not rq.strip() or not ra.strip():
+                    st.error("Pon una pregunta y una respuesta de recuperación.")
+                else:
+                    try:
+                        c = db.connect()
+                        uid_ = users.create_user(c, u2, p2, recovery_question=rq,
+                                                 recovery_answer=ra)
+                        c.close()
+                        _iniciar_sesion(uid_, u2, recordar2)
+                    except users.UserError as e:
+                        st.error(str(e))
+
+    with tab_fg:
+        fu = st.text_input("Tu usuario", key="fg_u")
+        if st.button("Ver mi pregunta"):
+            c = db.connect()
+            q = users.get_recovery_question(c, fu)
+            c.close()
+            st.session_state["fg_q"] = q or ""
+            st.session_state["fg_user"] = (fu or "").strip().lower()
+        if st.session_state.get("fg_q"):
+            st.caption(f"Pregunta: **{st.session_state['fg_q']}**")
+            with st.form("forgot_form"):
+                ans = st.text_input("Respuesta")
+                np1 = st.text_input("Nueva contraseña (mín. 4)", type="password")
+                if st.form_submit_button("Restablecer contraseña"):
+                    try:
+                        c = db.connect()
+                        ok = users.reset_password(c, st.session_state["fg_user"], ans, np1)
+                        c.close()
+                        if ok:
+                            st.success("✅ Contraseña cambiada. Ya puedes entrar con la nueva.")
+                            st.session_state.pop("fg_q", None)
+                        else:
+                            st.error("Respuesta incorrecta.")
+                    except users.UserError as e:
+                        st.error(str(e))
+        elif "fg_q" in st.session_state:
+            st.info("Ese usuario no tiene pregunta de recuperación, o no existe.")
     st.stop()
 
 
 _login_gate()
 uid = st.session_state["user_id"]
+
+# Escribe el token en el navegador durante el render normal (sin rerun que lo
+# corte), para que la sesión se recuerde al recargar.
+if st.session_state.get("session_token"):
+    try:
+        localS.setItem(SESSION_LS_KEY, st.session_state["session_token"], key="ls_sess_set")
+    except Exception:
+        pass
 
 
 # ---- Utilidades ----------------------------------------------------------
@@ -236,7 +311,13 @@ mv_by_id = {p.id: p.market_value for p in players}
 # ---- Barra lateral: usuario ----------------------------------------------
 st.sidebar.markdown(f"👤 **{st.session_state.get('username', '')}**")
 if st.sidebar.button("Cerrar sesión", use_container_width=True):
-    for k in ("user_id", "username"):
+    tok = st.session_state.get("session_token")
+    if tok:
+        c = db.connect()
+        users.delete_session(c, tok)
+        c.close()
+    localS.deleteItem(SESSION_LS_KEY, key="ls_sess_del")
+    for k in ("user_id", "username", "session_token"):
         st.session_state.pop(k, None)
     st.rerun()
 st.sidebar.divider()

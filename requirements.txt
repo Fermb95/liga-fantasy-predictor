@@ -1,5 +1,6 @@
 requests>=2.31
 pandas>=2.0
 streamlit>=1.30
+streamlit-local-storage>=0.0.15
 libsql-client>=0.3
 pytest>=8.0

@@ -44,3 +44,53 @@ def test_dos_usuarios_distintos(conn):
     a = users.create_user(conn, "uno", "clave1")
     b = users.create_user(conn, "dos", "clave2")
     assert a != b
+
+
+# ---- Recuperación de contraseña ----
+def test_recuperar_contrasena(conn):
+    users.create_user(conn, "ferran", "vieja",
+                      recovery_question="¿Tu equipo?", recovery_answer="Barça")
+    assert users.get_recovery_question(conn, "ferran") == "¿Tu equipo?"
+    # respuesta correcta (tolerante a mayúsculas/espacios) -> cambia la clave
+    assert users.reset_password(conn, "ferran", "  barça ", "nueva") is True
+    assert users.authenticate(conn, "ferran", "nueva")
+    assert users.authenticate(conn, "ferran", "vieja") is None
+
+
+def test_recuperar_respuesta_incorrecta(conn):
+    users.create_user(conn, "ferran", "vieja",
+                      recovery_question="¿Tu equipo?", recovery_answer="Barça")
+    assert users.reset_password(conn, "ferran", "Madrid", "nueva") is False
+    assert users.authenticate(conn, "ferran", "vieja")   # la clave no cambió
+
+
+def test_recuperar_sin_pregunta_no_permite(conn):
+    users.create_user(conn, "ferran", "vieja")           # sin pregunta de recuperación
+    assert users.get_recovery_question(conn, "ferran") is None
+    assert users.reset_password(conn, "ferran", "loquesea", "nueva") is False
+
+
+# ---- Sesiones recordadas ----
+def test_sesion_recordada(conn):
+    uid = users.create_user(conn, "ferran", "clave")
+    token = users.create_session(conn, uid)
+    assert token
+    assert users.validate_session(conn, token) == uid
+    users.delete_session(conn, token)
+    assert users.validate_session(conn, token) is None
+
+
+def test_sesion_token_invalido(conn):
+    assert users.validate_session(conn, "no-existe") is None
+    assert users.validate_session(conn, "") is None
+
+
+def test_sesion_caducada(conn):
+    import datetime as dt
+    uid = users.create_user(conn, "ferran", "clave")
+    token = users.create_session(conn, uid)
+    # forzamos caducidad en el pasado
+    conn.execute("UPDATE sessions SET expires_at=? WHERE user_id=?",
+                 ((dt.datetime.now() - dt.timedelta(days=1)).isoformat(), uid))
+    conn.commit()
+    assert users.validate_session(conn, token) is None

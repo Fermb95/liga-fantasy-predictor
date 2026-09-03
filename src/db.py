@@ -60,6 +60,7 @@ class _TursoConnection:
             client = libsql.create_client_sync(url=u, auth_token=token)
         self._c = client
         self.executescript(SCHEMA)
+        _migrate(self)
 
     def execute(self, sql, params=()):
         rs = self._c.execute(sql, list(params)) if params else self._c.execute(sql)
@@ -135,11 +136,20 @@ CREATE TABLE IF NOT EXISTS meta (
 
 -- Cuentas de usuario (contraseña cifrada con PBKDF2 + salt).
 CREATE TABLE IF NOT EXISTS users (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    username      TEXT UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    salt          TEXT NOT NULL,
-    created_at    TEXT
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    username             TEXT UNIQUE NOT NULL,
+    password_hash        TEXT NOT NULL,
+    salt                 TEXT NOT NULL,
+    created_at           TEXT,
+    recovery_question    TEXT,
+    recovery_answer_hash TEXT
+);
+
+-- Sesiones recordadas (token en el navegador → login automático).
+CREATE TABLE IF NOT EXISTS sessions (
+    token_hash TEXT PRIMARY KEY,
+    user_id    INTEGER,
+    expires_at TEXT
 );
 
 -- Dinero "para gastar" de cada usuario.
@@ -203,12 +213,29 @@ def connect(db_path: str | Path = DEFAULT_DB):
     # "no such table" en un despliegue nuevo con la BD aún vacía.
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn) -> None:
+    """Migraciones idempotentes para BDs creadas antes de nuevas columnas."""
+    try:
+        cols = {r["name"] for r in conn.execute("PRAGMA table_info(users)").fetchall()}
+    except Exception:
+        return
+    for col in ("recovery_question", "recovery_answer_hash"):
+        if col not in cols:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} TEXT")
+                conn.commit()
+            except Exception:
+                pass
 
 
 def init_db(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
     conn.commit()
+    _migrate(conn)
 
 
 def upsert_teams(conn: sqlite3.Connection, teams: list[Team]) -> int:
