@@ -149,6 +149,36 @@ def get_listings(conn, user_id: int) -> dict[int, int]:
         "SELECT player_id, ask_price FROM listings WHERE user_id=?", (user_id,))}
 
 
+# ---- "Mi mercado" (jugadores que te salen ahora, rotan) -----------------
+def get_market_players(conn, user_id: int) -> set[int]:
+    return {r["player_id"] for r in conn.execute(
+        "SELECT player_id FROM user_market WHERE user_id=?", (user_id,))}
+
+
+def set_market_players(conn, user_id: int, player_ids) -> None:
+    now = dt.datetime.now().isoformat(timespec="seconds")
+    conn.execute("DELETE FROM user_market WHERE user_id=?", (user_id,))
+    conn.executemany(
+        "INSERT INTO user_market (user_id, player_id, ts) VALUES (?, ?, ?)",
+        [(user_id, pid, now) for pid in player_ids],
+    )
+    conn.commit()
+
+
+def add_market_player(conn, user_id: int, player_id: int) -> None:
+    conn.execute(
+        """INSERT INTO user_market (user_id, player_id, ts) VALUES (?, ?, ?)
+           ON CONFLICT(user_id, player_id) DO NOTHING""",
+        (user_id, player_id, dt.datetime.now().isoformat(timespec="seconds")),
+    )
+    conn.commit()
+
+
+def remove_market_player(conn, user_id: int, player_id: int) -> None:
+    conn.execute("DELETE FROM user_market WHERE user_id=? AND player_id=?", (user_id, player_id))
+    conn.commit()
+
+
 # ---- Importar / exportar / vacío ----------------------------------------
 def export_state(conn, user_id: int) -> dict:
     roster = [[e.player_id, e.purchase_price, e.clause] for e in get_roster(conn, user_id)]

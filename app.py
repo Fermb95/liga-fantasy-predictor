@@ -16,7 +16,7 @@ import streamlit as st
 from streamlit_local_storage import LocalStorage
 
 from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
-                 market, picks, recommender, team_state, trends, users)
+                 market, mymarket, picks, recommender, team_state, trends, users)
 
 SESSION_LS_KEY = "session_token"
 
@@ -348,6 +348,7 @@ roster_ids = team_state.get_roster_ids(conn, uid)
 budget_saved = team_state.get_budget(conn, uid)
 active_bids = team_state.get_bids(conn, uid)
 active_listings = team_state.get_listings(conn, uid)
+market_ids = team_state.get_market_players(conn, uid)
 conn.close()
 mv_by_id = {p.id: p.market_value for p in players}
 
@@ -504,9 +505,65 @@ def tarjeta(s):
 
 
 # ---- Pestañas ------------------------------------------------------------
-tabs = st.tabs(["🎯 Recomendaciones", "🔥 Chollos", "🧢 Alineación", "🔎 Fichajes",
-                "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"])
-tab_rec, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant, tab_detalle = tabs
+tabs = st.tabs(["🎯 Recomendaciones", "🛒 Mi mercado", "🔥 Chollos", "🧢 Alineación",
+                "🔎 Fichajes", "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"])
+(tab_rec, tab_mimercado, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl,
+ tab_plant, tab_detalle) = tabs
+
+with tab_mimercado:
+    st.subheader("🛒 Mi mercado")
+    st.caption("Añade los jugadores que te salen ahora (escribe y selecciona; quítalos "
+               "con la ✕). Te digo cuáles fichar según tu dinero, tu plantilla y lo que "
+               "te hace falta reforzar.")
+    opciones_mm = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
+                   for p in sorted(players, key=lambda x: x.nickname)}
+    id_a_label_mm = {v: k for k, v in opciones_mm.items()}
+    default_mm = [id_a_label_mm[i] for i in market_ids if i in id_a_label_mm]
+    sel_mm = st.multiselect("Jugadores en tu mercado ahora", list(opciones_mm.keys()),
+                            default=default_mm, key="mm_sel",
+                            label_visibility="collapsed")
+    sel_mm_ids = {opciones_mm[s] for s in sel_mm}
+    if sel_mm_ids != market_ids:  # guardado fluido (sin botón)
+        c = db.connect(); team_state.set_market_players(c, uid, sel_mm_ids); c.close()
+        market_ids = sel_mm_ids
+
+    if not sel_mm_ids:
+        st.info("Aún no has añadido nada. Escribe arriba los jugadores de tu mercado.")
+    else:
+        market_scores = [score_por_id[i] for i in sel_mm_ids if i in score_por_id]
+        ranking = mymarket.rank_market(market_scores, squad_scores, disponible, tendencias)
+        fichar = [r for r in ranking if r.verdict == "🟢 Fichar"]
+        vende_y_ficha = [r for r in ranking if r.verdict == "🟠 Sí, pero vende"]
+        if fichar:
+            st.success("**Compra primero (te llega ya):** " + ", ".join(
+                f"{r.ps.player.nickname} (hasta {fmt_eur(r.max_buy)})" for r in fichar[:3]))
+        elif vende_y_ficha:
+            st.info("No hay fichajes que te lleguen con el dinero actual. Merecen la pena "
+                    "**vendiendo antes**: " + ", ".join(r.ps.player.nickname for r in vende_y_ficha[:3]))
+        filas = []
+        for r in ranking:
+            p = r.ps.player
+            afford_txt = {"te_llega": "✅ te llega", "vendiendo": "↔️ vendiendo",
+                          "no_te_llega": "⛔ no te llega"}[r.afford]
+            filas.append({
+                "Prioridad": r.priority,
+                "Veredicto": r.verdict,
+                "Jugador": p.nickname,
+                "Pos": POS.get(p.position_id, "?"),
+                "Precio": fmt_eur(p.market_value),
+                "Pujar hasta": fmt_eur(r.max_buy),
+                "¿Te llega?": afford_txt,
+                "Score": r.ps.score,
+                "Pts esp.": r.expected,
+                "Encaje": r.fit,
+                "Tendencia": _trend_txt(tendencias, p.id),
+                "Próximo rival": next_opp_txt(p.team_id),
+            })
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
+                     column_config={"Prioridad": st.column_config.ProgressColumn(
+                         "Prioridad", min_value=0, max_value=100, format="%.0f")})
+        st.caption("Verdictos: 🟢 fichar (te llega ya) · 🟠 sí, pero vende antes · "
+                   "🟡 dudoso · 🔴 pasa (no encaja o no rinde) · ⛔ no te llega ni vendiendo.")
 
 with tab_chollos:
     st.subheader("🔥 Chollos de la jornada")

@@ -5,3 +5,6 @@ venv/
 data/*.db
 .pytest_cache/
 .streamlit/secrets.toml
+
+# El workflow se añade por la web de GitHub (requiere permiso workflow)
+.github/workflows/

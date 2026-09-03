@@ -217,6 +217,14 @@ CREATE TABLE IF NOT EXISTS listings (
     ts        TEXT,
     PRIMARY KEY (user_id, player_id)
 );
+
+-- "Mi mercado": jugadores que le salen a cada usuario ahora mismo (rotan).
+CREATE TABLE IF NOT EXISTS user_market (
+    user_id   INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
+    ts        TEXT,
+    PRIMARY KEY (user_id, player_id)
+);
 """
 
 
