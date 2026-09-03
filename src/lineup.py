@@ -14,8 +14,8 @@ from dataclasses import dataclass
 
 from .engine import PlayerScore
 
-# Portero=1, Defensa=2, Medio=3, Delantero=4 (Entrenador=5 no entra en el once).
-GK, DEF, MID, FWD = 1, 2, 3, 4
+# Portero=1, Defensa=2, Medio=3, Delantero=4, Entrenador=5.
+GK, DEF, MID, FWD, COACH = 1, 2, 3, 4, 5
 
 # Formaciones oficiales (defensas, medios, delanteros) + 1 portero.
 FORMATIONS = [
@@ -44,14 +44,23 @@ class LineupResult:
     bench: list[PlayerScore]             # suplentes
     captain: PlayerScore | None
     total_expected: float                # suma de puntos esperados (con capitán x2)
+    coach: PlayerScore | None = None     # entrenador recomendado
 
 
 def best_captain(squad: list[PlayerScore]) -> PlayerScore | None:
     """El jugador de mayor puntuación esperada (su capitanía renta más)."""
-    jugables = [s for s in squad if PLAY_FACTOR.get(s.player.status, 1.0) > 0]
+    jugables = [s for s in squad
+                if s.player.position_id != COACH and PLAY_FACTOR.get(s.player.status, 1.0) > 0]
     if not jugables:
         return None
     return max(jugables, key=expected_points)
+
+
+def best_coach(squad: list[PlayerScore]) -> PlayerScore | None:
+    """El entrenador de tu plantilla con mayor puntuación esperada."""
+    entrenadores = [s for s in squad if s.player.position_id == COACH
+                    and PLAY_FACTOR.get(s.player.status, 1.0) > 0]
+    return max(entrenadores, key=expected_points) if entrenadores else None
 
 
 def optimal_lineup(squad: list[PlayerScore]) -> LineupResult | None:
@@ -84,5 +93,7 @@ def optimal_lineup(squad: list[PlayerScore]) -> LineupResult | None:
     # Capitán dentro del once (el de mayor puntuación esperada) → suma x2 su aporte.
     cap = max(mejor.xi, key=expected_points)
     mejor.captain = cap
-    mejor.total_expected = round(mejor.total_expected + expected_points(cap), 2)
+    mejor.coach = best_coach(squad)
+    extra = expected_points(cap) + (expected_points(mejor.coach) if mejor.coach else 0)
+    mejor.total_expected = round(mejor.total_expected + extra, 2)
     return mejor

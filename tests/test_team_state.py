@@ -96,3 +96,26 @@ def test_budget_view_sin_pujas():
     bv = ts.budget_view(10_000_000, {})
     assert bv.en_pujas == 0
     assert bv.disponible == 10_000_000
+
+
+def test_export_restore_roundtrip(conn, tmp_path):
+    ts.set_budget(conn, 7_000_000)
+    ts.buy_player(conn, 10, 3_000_000, clause=5_000_000)  # queda budget 4M, en roster
+    ts.add_bid(conn, 20, 2_000_000)
+    ts.add_listing(conn, 10, 6_000_000)
+    estado = ts.export_state(conn)
+
+    # Simula un arranque en frío: BD nueva y vacía.
+    import json
+    estado2 = json.loads(json.dumps(estado))  # como pasaría por el navegador (str)
+    conn2 = ts.db.connect(tmp_path / "fresh.db")
+    assert ts.is_empty(conn2)
+    ts.restore_state(conn2, estado2)
+    assert not ts.is_empty(conn2)
+    assert ts.get_budget(conn2) == 4_000_000
+    assert ts.get_roster_ids(conn2) == {10}
+    assert ts.get_bids(conn2) == {20: 2_000_000}
+    assert ts.get_listings(conn2) == {10: 6_000_000}
+    e = {x.player_id: x for x in ts.get_roster(conn2)}[10]
+    assert e.purchase_price == 3_000_000 and e.clause == 5_000_000
+    conn2.close()

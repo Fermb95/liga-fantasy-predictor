@@ -170,6 +170,43 @@ class BudgetView:
     disponible: int          # para_gastar - en_pujas (lo realmente libre ahora)
 
 
+def export_state(conn: sqlite3.Connection) -> dict:
+    """Serializa TU estado (dinero, plantilla, pujas, ventas) a un dict simple,
+    para guardarlo fuera de la BD (p. ej. en el navegador)."""
+    roster = [[e.player_id, e.purchase_price, e.clause] for e in get_roster(conn)]
+    return {
+        "budget": get_budget(conn),
+        "roster": roster,
+        "bids": get_bids(conn),
+        "listings": get_listings(conn),
+    }
+
+
+def restore_state(conn: sqlite3.Connection, state: dict) -> None:
+    """Reescribe TU estado en la BD a partir de un dict de export_state()."""
+    set_budget(conn, int(state.get("budget", 0) or 0))
+    roster = state.get("roster", []) or []
+    ids = [int(r[0]) for r in roster]
+    prices = {int(r[0]): int(r[1]) for r in roster if len(r) > 1 and r[1] is not None}
+    set_roster(conn, ids, prices)
+    for r in roster:
+        if len(r) > 2 and r[2] is not None:
+            set_clause(conn, int(r[0]), int(r[2]))
+    conn.execute("DELETE FROM bids")
+    conn.execute("DELETE FROM listings")
+    conn.commit()
+    for pid, amt in (state.get("bids") or {}).items():
+        add_bid(conn, int(pid), int(amt))
+    for pid, ask in (state.get("listings") or {}).items():
+        add_listing(conn, int(pid), int(ask))
+
+
+def is_empty(conn: sqlite3.Connection) -> bool:
+    """True si no hay nada de tu estado guardado (plantilla vacía y sin dinero)."""
+    return not get_roster_ids(conn) and get_budget(conn) == 0 \
+        and not get_bids(conn) and not get_listings(conn)
+
+
 def budget_view(para_gastar: int, bids: dict[int, int],
                 valor_plantilla: int = 0) -> BudgetView:
     """Calcula el desglose de dinero: para gastar, en pujas y disponible."""

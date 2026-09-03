@@ -68,3 +68,18 @@ def test_once_ideal_elige_mejores_jugadores():
 def test_sin_portero_no_hay_alineacion():
     squad = [ps(10 + i, lineup.DEF, 5) for i in range(5)]
     assert lineup.optimal_lineup(squad) is None
+
+
+def test_incluye_entrenador():
+    squad = squad_completa() + [ps(90, lineup.COACH, 7), ps(91, lineup.COACH, 3)]
+    res = lineup.optimal_lineup(squad)
+    assert res.coach is not None
+    assert res.coach.player.id == 90          # el entrenador con más pts esperados
+    # El entrenador no ocupa hueco de jugador de campo en el once.
+    assert all(s.player.position_id != lineup.COACH for s in res.xi)
+
+
+def test_capitan_no_es_entrenador():
+    squad = squad_completa() + [ps(90, lineup.COACH, 50)]  # entrenador con "forma" alta
+    cap = lineup.best_captain(squad)
+    assert cap.player.position_id != lineup.COACH

@@ -9,12 +9,17 @@ Ejecutar:  streamlit run app.py
 from __future__ import annotations
 
 import datetime as dt
+import json
 
 import pandas as pd
 import streamlit as st
+from streamlit_local_storage import LocalStorage
 
 from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
                  market, recommender, team_state)
+
+LS_KEY = "fantasy_state"
+EMPTY_STATE = json.dumps({"budget": 0, "roster": [], "bids": {}, "listings": {}})
 
 POS = {1: "POR", 2: "DEF", 3: "MED", 4: "DEL", 5: "ENT"}
 SIGNAL_EMOJI = {"CHOLLO": "🟢", "MANTENER": "🟡", "VENDER": "🔴"}
@@ -124,6 +129,19 @@ def scores_to_df(scores, teams, en_plantilla: set[int]) -> pd.DataFrame:
 # ---- Carga de datos + cabecera ------------------------------------------
 version = version_token()
 players, fixtures, teams, last_ingest = cargar_datos(version)
+
+# Arranque en frío en la nube: la BD de jugadores es efímera, así que si está
+# vacía la descargamos sola (sin que tengas que pulsar 🔄).
+if not players:
+    try:
+        with st.spinner("Cargando datos oficiales de LaLiga por primera vez…"):
+            ingest.run_ingest()
+        st.cache_data.clear()
+        version = version_token()
+        players, fixtures, teams, last_ingest = cargar_datos(version)
+    except Exception:
+        pass
+
 players_by_id = {p.id: p for p in players}
 
 c1, c2, c3 = st.columns([6, 3, 2])
@@ -158,7 +176,24 @@ if not players:
 
 
 # ---- Estado del equipo (persistente) ------------------------------------
+# ---- Persistencia en el navegador (sobrevive a reinicios, por dispositivo) ----
+localS = LocalStorage()
 conn = db.connect()
+# Si la BD (efímera) está vacía, recupera tu estado guardado en el navegador.
+if team_state.is_empty(conn):
+    raw = localS.getItem(LS_KEY)
+    if raw:
+        try:
+            team_state.restore_state(conn, json.loads(raw))
+        except Exception:
+            pass
+# Guarda el estado actual en el navegador (si hay algo que guardar).
+if not team_state.is_empty(conn):
+    try:
+        localS.setItem(LS_KEY, json.dumps(team_state.export_state(conn)), key="ls_persist")
+    except Exception:
+        pass
+
 roster_ids = team_state.get_roster_ids(conn)
 budget_saved = team_state.get_budget(conn)
 active_bids = team_state.get_bids(conn)
@@ -226,6 +261,7 @@ else:
             for pid in list(team_state.get_listings(c)):
                 team_state.remove_listing(c, pid)
             c.close()
+            localS.setItem(LS_KEY, EMPTY_STATE, key="ls_reset")
             st.rerun()
 
 with st.sidebar.expander("⚙️ Ajustar pesos del análisis"):
@@ -312,23 +348,32 @@ with tab_rec:
 
 # --- Alineación (capitán + once ideal) ---
 with tab_11:
-    st.subheader("Tu mejor alineación para la próxima jornada")
+    _no_jugadas = [f.week for f in fixtures if f.match_state != lineup.MATCH_FINISHED]
+    proxima_j = min(_no_jugadas) if _no_jugadas else "?"
+    st.subheader(f"Tu mejor alineación para la jornada {proxima_j}")
+    st.caption("Calculada por puntos esperados de cada jugador: forma reciente × "
+               "dificultad del rival de esta jornada × disponibilidad.")
     if not squad_scores:
         st.info("Guarda tu plantilla en la barra lateral para calcular tu once.")
     else:
         res = lineup.optimal_lineup(squad_scores)
         cap = lineup.best_captain(squad_scores)
+        coach = lineup.best_coach(squad_scores)
+        cc1, cc2 = st.columns(2)
         if cap:
-            st.success(f"🧢 **Capitán recomendado: {cap.player.nickname}** "
-                       f"({POS.get(cap.player.position_id,'?')}) · "
-                       f"{lineup.expected_points(cap)} pts esperados (¡doblan!)")
+            cc1.success(f"🧢 **Capitán: {cap.player.nickname}**\n\n"
+                        f"{POS.get(cap.player.position_id,'?')} · "
+                        f"{lineup.expected_points(cap)} pts esp. (¡doblan!)")
+        if coach:
+            cc2.info(f"👔 **Entrenador: {coach.player.nickname}**\n\n"
+                     f"{lineup.expected_points(coach)} pts esperados")
         if res is None:
             st.warning("No hay jugadores suficientes (¿falta portero?) para un once completo. "
-                       "Aun así tienes arriba tu capitán recomendado.")
+                       "Aun así tienes arriba tu capitán y entrenador recomendados.")
         else:
             d, m, f = res.formation
             st.caption(f"Formación óptima **{d}-{m}-{f}** · "
-                       f"{res.total_expected} pts esperados (capitán incluido)")
+                       f"{res.total_expected} pts esperados (capitán y entrenador incluidos)")
 
             def fila_xi(s):
                 es_cap = res.captain and s.player.id == res.captain.player.id
