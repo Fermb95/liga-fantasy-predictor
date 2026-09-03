@@ -78,6 +78,25 @@ python -m pytest          # todo (los 'live' de cuenta se saltan sin credenciale
 python -m pytest -m "not live"   # solo lógica, sin red
 ```
 
+## Multiusuario con Turso (para que jueguen tus amigos)
+
+Cada persona se registra con usuario y contraseña y tiene su propio equipo; el
+catálogo de jugadores es común. Necesita una base de datos **Turso** (SQLite en
+la nube, gratis). Sin Turso, la app funciona en modo local (un solo equipo).
+
+1. Crea una cuenta en https://turso.tech y una base de datos (gratis).
+2. Copia la **URL** de la base (`libsql://...`) y crea un **token** de acceso.
+3. En Streamlit Cloud → tu app → **Settings → Secrets**, pega:
+   ```toml
+   TURSO_DATABASE_URL = "libsql://tu-base.turso.io"
+   TURSO_AUTH_TOKEN = "tu_token"
+   ```
+4. Guarda; la app se reinicia y ya guarda las cuentas y equipos de forma
+   permanente y compartida.
+
+Las contraseñas se guardan **cifradas** (PBKDF2 + salt). Es una app casual: que
+nadie reutilice una contraseña importante.
+
 ## Desplegar gratis (Streamlit Community Cloud)
 
 1. Sube esta carpeta a un repositorio de GitHub.

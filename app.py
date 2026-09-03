@@ -9,17 +9,13 @@ Ejecutar:  streamlit run app.py
 from __future__ import annotations
 
 import datetime as dt
-import json
+import os
 
 import pandas as pd
 import streamlit as st
-from streamlit_local_storage import LocalStorage
 
 from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
-                 market, recommender, team_state)
-
-LS_KEY = "fantasy_state"
-EMPTY_STATE = json.dumps({"budget": 0, "roster": [], "bids": {}, "listings": {}})
+                 market, recommender, team_state, users)
 
 POS = {1: "POR", 2: "DEF", 3: "MED", 4: "DEL", 5: "ENT"}
 SIGNAL_EMOJI = {"CHOLLO": "🟢", "MANTENER": "🟡", "VENDER": "🔴"}
@@ -44,6 +40,59 @@ st.markdown(
     """,
     unsafe_allow_html=True,
 )
+
+# ---- Turso (persistencia en la nube) desde los secrets de Streamlit ------
+try:
+    for _k in ("TURSO_DATABASE_URL", "TURSO_AUTH_TOKEN"):
+        if not os.environ.get(_k) and _k in st.secrets:
+            os.environ[_k] = st.secrets[_k]
+except Exception:
+    pass
+
+
+# ---- Login / registro ----------------------------------------------------
+def _login_gate():
+    if st.session_state.get("user_id"):
+        return
+    st.title("⚽ Predictor LaLiga Fantasy")
+    st.caption("Entra con tu usuario para ver y gestionar tu equipo.")
+    if not db.using_turso():
+        st.warning("⚠️ Turso no está configurado: las cuentas no se guardarán entre "
+                   "reinicios. Añade los secrets TURSO_DATABASE_URL y TURSO_AUTH_TOKEN.")
+    tab_in, tab_up = st.tabs(["Entrar", "Crear cuenta"])
+    with tab_in:
+        with st.form("login_form"):
+            u = st.text_input("Usuario")
+            p = st.text_input("Contraseña", type="password")
+            if st.form_submit_button("Entrar", type="primary", use_container_width=True):
+                c = db.connect()
+                uid_ = users.authenticate(c, u, p)
+                c.close()
+                if uid_:
+                    st.session_state["user_id"] = uid_
+                    st.session_state["username"] = (u or "").strip().lower()
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
+    with tab_up:
+        with st.form("signup_form"):
+            u2 = st.text_input("Usuario nuevo (3-20 letras/números)", key="su_u")
+            p2 = st.text_input("Contraseña (mín. 4)", type="password", key="su_p")
+            if st.form_submit_button("Crear cuenta", use_container_width=True):
+                try:
+                    c = db.connect()
+                    uid_ = users.create_user(c, u2, p2)
+                    c.close()
+                    st.session_state["user_id"] = uid_
+                    st.session_state["username"] = (u2 or "").strip().lower()
+                    st.rerun()
+                except users.UserError as e:
+                    st.error(str(e))
+    st.stop()
+
+
+_login_gate()
+uid = st.session_state["user_id"]
 
 
 # ---- Utilidades ----------------------------------------------------------
@@ -176,30 +225,21 @@ if not players:
 
 
 # ---- Estado del equipo (persistente) ------------------------------------
-# ---- Persistencia en el navegador (sobrevive a reinicios, por dispositivo) ----
-localS = LocalStorage()
 conn = db.connect()
-# Si la BD (efímera) está vacía, recupera tu estado guardado en el navegador.
-if team_state.is_empty(conn):
-    raw = localS.getItem(LS_KEY)
-    if raw:
-        try:
-            team_state.restore_state(conn, json.loads(raw))
-        except Exception:
-            pass
-# Guarda el estado actual en el navegador (si hay algo que guardar).
-if not team_state.is_empty(conn):
-    try:
-        localS.setItem(LS_KEY, json.dumps(team_state.export_state(conn)), key="ls_persist")
-    except Exception:
-        pass
-
-roster_ids = team_state.get_roster_ids(conn)
-budget_saved = team_state.get_budget(conn)
-active_bids = team_state.get_bids(conn)
-active_listings = team_state.get_listings(conn)
+roster_ids = team_state.get_roster_ids(conn, uid)
+budget_saved = team_state.get_budget(conn, uid)
+active_bids = team_state.get_bids(conn, uid)
+active_listings = team_state.get_listings(conn, uid)
 conn.close()
 mv_by_id = {p.id: p.market_value for p in players}
+
+# ---- Barra lateral: usuario ----------------------------------------------
+st.sidebar.markdown(f"👤 **{st.session_state.get('username', '')}**")
+if st.sidebar.button("Cerrar sesión", use_container_width=True):
+    for k in ("user_id", "username"):
+        st.session_state.pop(k, None)
+    st.rerun()
+st.sidebar.divider()
 
 # ---- Barra lateral: tu situación ----------------------------------------
 st.sidebar.header("💼 Tu situación")
@@ -223,8 +263,8 @@ if not configurado:
     if st.sidebar.button("💾 Guardar configuración inicial", type="primary",
                          use_container_width=True, disabled=not sel_ids):
         c = db.connect()
-        team_state.set_roster(c, sel_ids, prices={pid: mv_by_id.get(pid, 0) for pid in sel_ids})
-        team_state.set_budget(c, budget)
+        team_state.set_roster(c, uid, sel_ids, prices={pid: mv_by_id.get(pid, 0) for pid in sel_ids})
+        team_state.set_budget(c, uid, budget)
         c.close()
         st.rerun()
     squad_ids = sel_ids
@@ -247,21 +287,20 @@ else:
                              step=250_000, format="%d", key=f"budget_edit_{budget}")
         if st.button("Guardar cambios manuales", use_container_width=True):
             c = db.connect()
-            team_state.set_roster(c, {opciones[s] for s in sel},
+            team_state.set_roster(c, uid, {opciones[s] for s in sel},
                                   prices={opciones[s]: mv_by_id.get(opciones[s], 0) for s in sel})
-            team_state.set_budget(c, nb)
+            team_state.set_budget(c, uid, nb)
             c.close()
             st.rerun()
         if st.button("🗑️ Reiniciar todo", use_container_width=True):
             c = db.connect()
-            team_state.set_roster(c, [])
-            team_state.set_budget(c, 0)
-            for pid in list(team_state.get_bids(c)):
-                team_state.remove_bid(c, pid)
-            for pid in list(team_state.get_listings(c)):
-                team_state.remove_listing(c, pid)
+            team_state.set_roster(c, uid, [])
+            team_state.set_budget(c, uid, 0)
+            for pid in list(team_state.get_bids(c, uid)):
+                team_state.remove_bid(c, uid, pid)
+            for pid in list(team_state.get_listings(c, uid)):
+                team_state.remove_listing(c, uid, pid)
             c.close()
-            localS.setItem(LS_KEY, EMPTY_STATE, key="ls_reset")
             st.rerun()
 
 with st.sidebar.expander("⚙️ Ajustar pesos del análisis"):
@@ -288,8 +327,8 @@ with st.sidebar.expander("🔐 Cuenta oficial (email y contraseña)"):
                     lg = ligas[0]
                     team = cl.get_team(lg.id, lg.team_id)
                     c = db.connect()
-                    team_state.set_roster(c, set(team.player_ids))
-                    team_state.set_budget(c, team.money or lg.money)
+                    team_state.set_roster(c, uid, set(team.player_ids))
+                    team_state.set_budget(c, uid, team.money or lg.money)
                     c.close()
                     st.success(f"Cargado de '{lg.name}' ✅")
                     st.rerun()
@@ -454,14 +493,14 @@ with tab_fich:
         st.markdown("**Registrar:**")
         r1, r2 = st.columns(2)
         if r1.button("📌 Anotar puja (dinero retenido)", use_container_width=True):
-            c = db.connect(); team_state.add_bid(c, target.player.id, bid); c.close()
+            c = db.connect(); team_state.add_bid(c, uid, target.player.id, bid); c.close()
             st.success("Puja anotada."); st.rerun()
         clausula = st.number_input("Cláusula al comprarlo", min_value=0,
                                    value=int(adv.suggested_clause), step=100_000, format="%d")
         if r2.button("✅ Registrar compra efectuada", type="primary", use_container_width=True):
             c = db.connect()
-            team_state.remove_bid(c, target.player.id)
-            nuevo = team_state.buy_player(c, target.player.id, bid, clause=clausula or None)
+            team_state.remove_bid(c, uid, target.player.id)
+            nuevo = team_state.buy_player(c, uid, target.player.id, bid, clause=clausula or None)
             c.close()
             st.success(f"Fichado {target.player.nickname}. Dinero: {fmt_eur(nuevo)}")
             st.rerun()
@@ -494,13 +533,13 @@ with tab_dinero:
                                     format="%d", key=f"bidamt_{pid}", label_visibility="collapsed")
             if e1.button("✅ Comprado", key=f"buy_{pid}", use_container_width=True):
                 c = db.connect()
-                team_state.remove_bid(c, pid)
-                team_state.buy_player(c, pid, nuevo)
+                team_state.remove_bid(c, uid, pid)
+                team_state.buy_player(c, uid, pid, nuevo)
                 c.close(); st.rerun()
             if e2.button("💾 Guardar", key=f"savebid_{pid}", use_container_width=True):
-                c = db.connect(); team_state.add_bid(c, pid, nuevo); c.close(); st.rerun()
+                c = db.connect(); team_state.add_bid(c, uid, pid, nuevo); c.close(); st.rerun()
             if e3.button("🗑️", key=f"delbid_{pid}", use_container_width=True):
-                c = db.connect(); team_state.remove_bid(c, pid); c.close(); st.rerun()
+                c = db.connect(); team_state.remove_bid(c, uid, pid); c.close(); st.rerun()
             st.divider()
     else:
         st.caption("No tienes pujas anotadas. Anótalas desde la pestaña 🔎 Fichajes.")
@@ -519,13 +558,13 @@ with tab_dinero:
                                     format="%d", key=f"askamt_{pid}", label_visibility="collapsed")
             if e1.button("✅ Vendido", key=f"sold_{pid}", use_container_width=True):
                 c = db.connect()
-                team_state.remove_listing(c, pid)
-                team_state.sell_player(c, pid, nuevo)
+                team_state.remove_listing(c, uid, pid)
+                team_state.sell_player(c, uid, pid, nuevo)
                 c.close(); st.rerun()
             if e2.button("💾 Guardar", key=f"savelist_{pid}", use_container_width=True):
-                c = db.connect(); team_state.add_listing(c, pid, nuevo); c.close(); st.rerun()
+                c = db.connect(); team_state.add_listing(c, uid, pid, nuevo); c.close(); st.rerun()
             if e3.button("🗑️", key=f"dellist_{pid}", use_container_width=True):
-                c = db.connect(); team_state.remove_listing(c, pid); c.close(); st.rerun()
+                c = db.connect(); team_state.remove_listing(c, uid, pid); c.close(); st.rerun()
             st.divider()
     else:
         st.caption("No tienes jugadores en venta. Ponlos en venta desde la pestaña 🧮 Tu plantilla.")
@@ -676,13 +715,13 @@ with tab_plant:
                                        step=100_000, format="%d")
             b1, b2 = st.columns(2)
             if b1.button("🏷️ Poner en venta", use_container_width=True):
-                c = db.connect(); team_state.add_listing(c, sv.player.id, precio_v); c.close()
+                c = db.connect(); team_state.add_listing(c, uid, sv.player.id, precio_v); c.close()
                 st.success(f"{sv.player.nickname} puesto en venta por {fmt_eur(precio_v)}.")
                 st.rerun()
             if b2.button("✅ Registrar venta hecha", type="primary", use_container_width=True):
                 c = db.connect()
-                team_state.remove_listing(c, sv.player.id)
-                nuevo = team_state.sell_player(c, sv.player.id, precio_v)
+                team_state.remove_listing(c, uid, sv.player.id)
+                nuevo = team_state.sell_player(c, uid, sv.player.id, precio_v)
                 c.close()
                 st.success(f"Vendido {sv.player.nickname}. Dinero: {fmt_eur(nuevo)}")
                 st.rerun()

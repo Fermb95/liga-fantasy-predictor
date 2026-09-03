@@ -1,12 +1,88 @@
-"""Capa SQLite: esquema + upserts. Gratis, cero configuración, un solo fichero."""
+"""Capa de datos: SQLite en local, Turso (libSQL) en la nube.
+
+Mismo esquema y mismo SQL para ambos backends (Turso es SQLite compatible). Si
+existen las credenciales de Turso (env TURSO_DATABASE_URL + TURSO_AUTH_TOKEN, que
+la app copia desde los secrets de Streamlit), se usa Turso —persistente y
+compartido entre usuarios—; si no, un fichero SQLite local (desarrollo).
+"""
 from __future__ import annotations
 
+import os
 import sqlite3
 from pathlib import Path
 
 from .api_client import Fixture, Player, Team
 
 DEFAULT_DB = Path(__file__).resolve().parent.parent / "data" / "fantasy.db"
+
+
+def _turso_creds() -> tuple[str | None, str | None]:
+    return os.environ.get("TURSO_DATABASE_URL"), os.environ.get("TURSO_AUTH_TOKEN")
+
+
+def using_turso() -> bool:
+    url, token = _turso_creds()
+    return bool(url and token)
+
+
+# ---- Adaptador Turso: expone la misma interfaz que sqlite3.Connection --------
+class _TursoCursor:
+    """Cursor sobre un ResultSet de libsql_client; devuelve filas como dict."""
+    def __init__(self, result_set):
+        self._rows = [dict(r.asdict()) for r in result_set.rows]
+        self._i = 0
+        self.lastrowid = getattr(result_set, "last_insert_rowid", None)
+
+    def fetchone(self):
+        if self._i < len(self._rows):
+            row = self._rows[self._i]
+            self._i += 1
+            return row
+        return None
+
+    def fetchall(self):
+        rows = self._rows[self._i:]
+        self._i = len(self._rows)
+        return rows
+
+    def __iter__(self):
+        return iter(self._rows)
+
+
+class _TursoConnection:
+    """Conexión a Turso con la interfaz mínima de sqlite3 que usa la app."""
+    def __init__(self, url: str, token: str, client=None, libsql=None):
+        if libsql is None:
+            import libsql_client as libsql
+        self._libsql = libsql
+        if client is None:
+            u = url.replace("libsql://", "https://") if url.startswith("libsql://") else url
+            client = libsql.create_client_sync(url=u, auth_token=token)
+        self._c = client
+        self.executescript(SCHEMA)
+
+    def execute(self, sql, params=()):
+        rs = self._c.execute(sql, list(params)) if params else self._c.execute(sql)
+        return _TursoCursor(rs)
+
+    def executemany(self, sql, seq):
+        stmts = [self._libsql.Statement(sql, list(p)) for p in seq]
+        if stmts:
+            self._c.batch(stmts)
+
+    def executescript(self, script):
+        stmts = [s.strip() for s in script.split(";") if s.strip()]
+        if stmts:
+            self._c.batch([self._libsql.Statement(s) for s in stmts])
+
+    def commit(self):
+        pass  # libsql_client hace autocommit por sentencia
+
+    def close(self):
+        try:
+            self._c.close()
+        except Exception:
+            pass
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
@@ -51,46 +127,73 @@ CREATE TABLE IF NOT EXISTS fixtures (
 CREATE INDEX IF NOT EXISTS idx_fixtures_week ON fixtures(week);
 CREATE INDEX IF NOT EXISTS idx_players_team ON players(team_id);
 
--- Momento de la última actualización de datos (una fila por tabla lógica).
+-- Momento de la última actualización de datos (global, compartido).
 CREATE TABLE IF NOT EXISTS meta (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
 
--- Tu plantilla real (los jugadores que tienes ahora mismo).
-CREATE TABLE IF NOT EXISTS roster (
-    player_id      INTEGER PRIMARY KEY,
-    purchase_price INTEGER,   -- lo que pagaste (o su valor al añadirlo)
-    clause         INTEGER,   -- cláusula de blindaje actual
-    added_at       TEXT
+-- Cuentas de usuario (contraseña cifrada con PBKDF2 + salt).
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    salt          TEXT NOT NULL,
+    created_at    TEXT
 );
 
--- Historial de compras y ventas.
+-- Dinero "para gastar" de cada usuario.
+CREATE TABLE IF NOT EXISTS budgets (
+    user_id INTEGER PRIMARY KEY,
+    amount  INTEGER NOT NULL DEFAULT 0
+);
+
+-- Plantilla de cada usuario.
+CREATE TABLE IF NOT EXISTS roster (
+    user_id        INTEGER NOT NULL,
+    player_id      INTEGER NOT NULL,
+    purchase_price INTEGER,
+    clause         INTEGER,
+    added_at       TEXT,
+    PRIMARY KEY (user_id, player_id)
+);
+
+-- Historial de compras y ventas por usuario.
 CREATE TABLE IF NOT EXISTS transactions (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id   INTEGER,
     player_id INTEGER,
     kind      TEXT,     -- 'buy' | 'sell'
     price     INTEGER,
     ts        TEXT
 );
 
--- Pujas que tienes en curso por jugadores del mercado (dinero retenido).
+-- Pujas en curso por usuario (dinero retenido).
 CREATE TABLE IF NOT EXISTS bids (
-    player_id INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
     amount    INTEGER,
-    ts        TEXT
+    ts        TEXT,
+    PRIMARY KEY (user_id, player_id)
 );
 
--- Jugadores TUYOS que has puesto en venta, con el precio que pides.
+-- Jugadores en venta por usuario.
 CREATE TABLE IF NOT EXISTS listings (
-    player_id INTEGER PRIMARY KEY,
+    user_id   INTEGER NOT NULL,
+    player_id INTEGER NOT NULL,
     ask_price INTEGER,
-    ts        TEXT
+    ts        TEXT,
+    PRIMARY KEY (user_id, player_id)
 );
 """
 
 
-def connect(db_path: str | Path = DEFAULT_DB) -> sqlite3.Connection:
+def connect(db_path: str | Path = DEFAULT_DB):
+    """Devuelve una conexión: Turso si hay credenciales, si no SQLite local."""
+    url, token = _turso_creds()
+    if url and token:
+        return _TursoConnection(url, token)
+
     path = Path(db_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
