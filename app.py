@@ -387,7 +387,7 @@ with tab_rec:
 
 # --- Alineación (capitán + once ideal) ---
 with tab_11:
-    _no_jugadas = [f.week for f in fixtures if f.match_state != lineup.MATCH_FINISHED]
+    _no_jugadas = [f.week for f in fixtures if f.match_state != engine.MATCH_FINISHED]
     proxima_j = min(_no_jugadas) if _no_jugadas else "?"
     st.subheader(f"Tu mejor alineación para la jornada {proxima_j}")
     st.caption("Calculada por puntos esperados de cada jugador: forma reciente × "
