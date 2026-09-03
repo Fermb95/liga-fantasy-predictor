@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import os
 from pathlib import Path
 
 from . import db
@@ -49,7 +50,13 @@ def run_ingest(db_path: str | Path = db.DEFAULT_DB, client: FantasyClient | None
 
 
 if __name__ == "__main__":
+    import sys
+
     summary = run_ingest()
-    print("Ingesta completada:")
-    for k, v in summary.items():
-        print(f"  {k}: {v}")
+    print("Ingesta completada:", summary, flush=True)
+    # Cierra el cliente Turso y fuerza la salida: libsql_client deja hilos de red
+    # abiertos que, si no, dejarían el proceso (y el workflow) colgado tras acabar.
+    db.close_turso_client()
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os._exit(0)

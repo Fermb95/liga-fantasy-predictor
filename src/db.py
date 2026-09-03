@@ -40,6 +40,19 @@ def _get_turso_client(url: str, token: str):
     return _turso_client
 
 
+def close_turso_client() -> None:
+    """Cierra el cliente Turso compartido. Úsalo al final de un SCRIPT (ingesta)
+    para que el proceso pueda terminar; la app NO lo llama (reutiliza el cliente)."""
+    global _turso_client, _turso_schema_done
+    if _turso_client is not None:
+        try:
+            _turso_client.close()
+        except Exception:
+            pass
+        _turso_client = None
+        _turso_schema_done = False
+
+
 # ---- Adaptador Turso: expone la misma interfaz que sqlite3.Connection --------
 class _TursoCursor:
     """Cursor sobre un ResultSet de libsql_client; devuelve filas como dict."""
