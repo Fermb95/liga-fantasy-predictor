@@ -34,7 +34,9 @@ def expected_points(ps: PlayerScore) -> float:
     # Calendario: rival fácil sube, difícil baja (0.85 a 1.15).
     fixture_mult = 0.85 + 0.30 * ps.facilidad_calendario
     play = PLAY_FACTOR.get(p.status, 1.0)
-    return round(base * fixture_mult * play, 2)
+    # Titularidad: quien no juega fijo rinde menos de media (0.5 a 1.0).
+    titular = 0.5 + 0.5 * ps.titularidad
+    return round(base * fixture_mult * play * titular, 2)
 
 
 @dataclass

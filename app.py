@@ -220,6 +220,15 @@ def cargar_tendencias(version: str):
 
 
 @st.cache_data(show_spinner=False)
+def cargar_valor_historico(version: str, player_id: int):
+    conn = db.connect()
+    try:
+        return db.get_value_history(conn, player_id)
+    finally:
+        conn.close()
+
+
+@st.cache_data(show_spinner=False)
 def calcular_scores(version: str, pesos: tuple[float, float, float, float]):
     players, fixtures, _teams, _last = cargar_datos(version)
     return engine.score_players(players, fixtures, engine.Weights(*pesos))
@@ -496,8 +505,8 @@ def tarjeta(s):
 
 # ---- Pestañas ------------------------------------------------------------
 tabs = st.tabs(["🎯 Recomendaciones", "🔥 Chollos", "🧢 Alineación", "🔎 Fichajes",
-                "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla"])
-tab_rec, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant = tabs
+                "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"])
+tab_rec, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant, tab_detalle = tabs
 
 with tab_chollos:
     st.subheader("🔥 Chollos de la jornada")
@@ -870,9 +879,15 @@ with tab_plant:
                 "Tendencia": _trend_txt(tendencias, s.player.id),
                 "Próximo rival": next_opp_txt(s.player.team_id),
                 "Estado": s.player.status_es,
-                "Consejo": "🔴 VENDER" if s in rec.vender else "🟢 Mantener",
+                "Consejo": ("🔒 No vender (imprescindible)" if s.player.id in rec.imprescindibles
+                            else "🔴 VENDER" if s in rec.vender else "🟢 Mantener"),
             })
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+        if rec.imprescindibles:
+            nombres = ", ".join(sc.player.nickname for sc in squad_scores
+                                if sc.player.id in rec.imprescindibles)
+            st.info(f"🔒 No te recomiendo vender a **{nombres}**: te dejaría sin poder "
+                    "formar un once completo. Ficha un recambio en su posición antes de venderlo.")
 
         # Aviso de valor a la baja (buen momento para vender antes de que caiga más).
         bajando = [s for s in squad_scores
@@ -907,3 +922,67 @@ with tab_plant:
                 c.close()
                 st.success(f"Vendido {sv.player.nickname}. Dinero: {fmt_eur(nuevo)}")
                 st.rerun()
+
+
+# --- Detalle de jugador ---
+with tab_detalle:
+    st.subheader("🔍 Detalle de jugador")
+    dopts = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
+             for p in sorted(players, key=lambda x: x.nickname)}
+    dsel = st.selectbox("Elige un jugador", ["—"] + list(dopts.keys()), key="detalle_sel")
+    if dsel != "—":
+        pid = dopts[dsel]
+        s = score_por_id.get(pid)
+        p = s.player if s else players_by_id.get(pid)
+        adv = market.price_advice(s) if s else None
+        t = tendencias.get(pid)
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Valor", fmt_eur(p.market_value))
+        c2.metric("Score", s.score if s else "—")
+        c3.metric("Pts esperados", lineup.expected_points(s) if s else "—")
+        c4.metric("Puntos totales", p.points)
+        c1b, c2b, c3b, c4b = st.columns(4)
+        c1b.metric("Forma (últimas)", s.forma if s else "—")
+        c2b.metric("Titularidad", f"{round(s.titularidad*100)}%" if s else "—")
+        c3b.metric("Media/jornada", round(p.average_points, 1))
+        c4b.metric("Estado", p.status_es)
+
+        if adv:
+            st.markdown(f"🛒 Comprar hasta **{fmt_eur(adv.max_buy)}** · 🏷️ Vender por "
+                        f"**{fmt_eur(adv.sell_ask)}** · 🛡️ Cláusula sugerida **{fmt_eur(adv.suggested_clause)}**")
+        if t and t.direction != "new":
+            signo = "+" if t.change > 0 else ""
+            st.markdown(f"{t.emoji} Valor **{t.label}** ({signo}{t.pct:.1f}% desde la última actualización)")
+
+        # Puntos por jornada (gráfico de barras).
+        if p.week_points:
+            st.markdown("**Puntos por jornada**")
+            wp = dict(sorted(p.week_points.items()))
+            st.bar_chart(pd.DataFrame({"Puntos": list(wp.values())},
+                                      index=[f"J{k}" for k in wp.keys()]))
+
+        # Evolución del valor de mercado.
+        hist = cargar_valor_historico(version, pid)
+        if len(hist) >= 2:
+            st.markdown("**Evolución del valor de mercado**")
+            dfh = pd.DataFrame({"Valor (€)": [v for _, v in hist]},
+                               index=[d for d, _ in hist])
+            st.line_chart(dfh)
+        else:
+            st.caption("El gráfico de valor aparecerá cuando haya al menos 2 actualizaciones "
+                       "en días distintos.")
+
+        # Próximos partidos.
+        st.markdown("**Próximos partidos**")
+        prox = engine.next_opponents(p.team_id, fixtures, n=5)
+        if prox:
+            filas = []
+            for rid, es_local, week in prox:
+                filas.append({
+                    "Jornada": f"J{week}",
+                    "Rival": ("🏠 vs " if es_local else "✈️ @ ") + team_name(teams, rid),
+                })
+            st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+        else:
+            st.caption("Sin próximos partidos en el calendario.")

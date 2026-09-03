@@ -26,6 +26,22 @@ class Recommendation:
     vender: list[PlayerScore] = field(default_factory=list)
     mantener: list[PlayerScore] = field(default_factory=list)
     ignorar: list[PlayerScore] = field(default_factory=list)
+    # Jugadores que NO conviene vender aunque rindan poco, porque te dejarían sin
+    # poder alinear un once completo (p. ej. tu único portero).
+    imprescindibles: set[int] = field(default_factory=set)
+
+
+def _imprescindibles(squad_scores: list[PlayerScore]) -> set[int]:
+    """Ids de jugadores cuya venta te dejaría sin poder formar un once válido."""
+    from . import lineup
+    if lineup.optimal_lineup(squad_scores) is None:
+        return set()  # aún no puedes formar un once (plantilla incompleta): no bloqueamos
+    protegidos = set()
+    for s in squad_scores:
+        resto = [x for x in squad_scores if x.player.id != s.player.id]
+        if lineup.optimal_lineup(resto) is None:
+            protegidos.add(s.player.id)
+    return protegidos
 
 
 def recommend(
@@ -46,6 +62,10 @@ def recommend(
     squad = set(squad_ids or [])
     rec = Recommendation()
 
+    # Jugadores imprescindibles: no recomendar venderlos (romperían tu once).
+    squad_scores = [s for s in scores if s.player.id in squad]
+    rec.imprescindibles = _imprescindibles(squad_scores)
+
     # Mediana de precio por posición (para detectar "caros que no rinden").
     precios_pos: dict[int, list[int]] = {}
     for s in scores:
@@ -58,10 +78,12 @@ def recommend(
 
         if en_equipo:
             # Decisión sobre TUS jugadores.
-            if p.status in MALOS_ESTADOS or s.signal == "VENDER" or s.score < umbral_vender:
+            quiere_vender = (p.status in MALOS_ESTADOS or s.signal == "VENDER"
+                             or s.score < umbral_vender)
+            if quiere_vender and p.id not in rec.imprescindibles:
                 rec.vender.append(s)
             else:
-                rec.mantener.append(s)
+                rec.mantener.append(s)  # bueno, o imprescindible aunque rinda poco
             continue
 
         # Jugadores que NO tienes: candidatos a comprar o trampas a ignorar.

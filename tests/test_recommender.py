@@ -38,6 +38,30 @@ def test_vender_tus_jugadores_malos():
     assert mantener_ids == {2}
 
 
+def test_no_vender_unico_portero():
+    # Portero flojo (señal VENDER) + resto para formar un 3-4-3.
+    squad = [mk_score(1, 10, 5_000_000, signal="VENDER", pos=1)]
+    squad += [mk_score(10 + i, 60, 5_000_000, pos=2) for i in range(3)]
+    squad += [mk_score(20 + i, 60, 5_000_000, pos=3) for i in range(4)]
+    squad += [mk_score(30 + i, 60, 5_000_000, pos=4) for i in range(3)]
+    ids = [s.player.id for s in squad]
+    rec = recommender.recommend(squad, budget=0, squad_ids=ids)
+    assert 1 in rec.imprescindibles                       # es imprescindible
+    assert all(s.player.id != 1 for s in rec.vender)      # NO se recomienda venderlo
+
+
+def test_con_dos_porteros_si_se_puede_vender_el_malo():
+    squad = [mk_score(1, 10, 5_000_000, signal="VENDER", pos=1),
+             mk_score(2, 90, 5_000_000, pos=1)]            # segundo portero
+    squad += [mk_score(10 + i, 60, 5_000_000, pos=2) for i in range(3)]
+    squad += [mk_score(20 + i, 60, 5_000_000, pos=3) for i in range(4)]
+    squad += [mk_score(30 + i, 60, 5_000_000, pos=4) for i in range(3)]
+    ids = [s.player.id for s in squad]
+    rec = recommender.recommend(squad, budget=0, squad_ids=ids)
+    assert 1 not in rec.imprescindibles
+    assert any(s.player.id == 1 for s in rec.vender)       # el portero malo sí se vende
+
+
 def test_no_recomienda_comprar_lo_que_ya_tienes():
     scores = [mk_score(1, 90, 5_000_000)]
     rec = recommender.recommend(scores, budget=100_000_000, squad_ids=[1])

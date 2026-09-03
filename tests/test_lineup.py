@@ -22,6 +22,13 @@ def squad_completa():
     return s
 
 
+def test_expected_points_penaliza_no_titular():
+    fijo = ps(1, lineup.FWD, 10)                 # titularidad 1.0 (helper)
+    suplente = ps(2, lineup.FWD, 10)
+    suplente.titularidad = 0.2                    # juega poco
+    assert lineup.expected_points(fijo) > lineup.expected_points(suplente)
+
+
 def test_expected_points_calendario_y_estado():
     facil = ps(1, lineup.FWD, 10, cal=1.0)
     dificil = ps(2, lineup.FWD, 10, cal=0.0)
