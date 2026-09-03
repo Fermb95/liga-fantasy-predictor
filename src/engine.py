@@ -133,6 +133,18 @@ def upcoming_ease(team_id: int, fixtures: list[Fixture], strength: dict[int, flo
     return sum(vals) / len(vals)
 
 
+def next_opponents(team_id: int, fixtures: list[Fixture], n: int = 1) -> list[tuple[int, bool, int]]:
+    """Próximos rivales del equipo: lista de (rival_id, es_local, jornada)."""
+    prox = [f for f in fixtures if f.match_state != MATCH_FINISHED
+            and team_id in (f.local_id, f.visitor_id)]
+    prox.sort(key=lambda f: (f.week, f.date))
+    out = []
+    for f in prox[:n]:
+        rival = f.visitor_id if f.local_id == team_id else f.local_id
+        out.append((rival, f.local_id == team_id, f.week))
+    return out
+
+
 # ---- Utilidades de normalización ----------------------------------------
 def _minmax_map(values: dict[int, float], default: float = 0.5) -> dict[int, float]:
     if not values:

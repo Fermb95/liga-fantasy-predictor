@@ -16,7 +16,7 @@ import streamlit as st
 from streamlit_local_storage import LocalStorage
 
 from src import (account, advisor, auth, compare, db, engine, ingest, lineup,
-                 market, recommender, team_state, users)
+                 market, picks, recommender, team_state, trends, users)
 
 SESSION_LS_KEY = "session_token"
 
@@ -211,6 +211,15 @@ def cargar_datos(version: str):
 
 
 @st.cache_data(show_spinner=False)
+def cargar_tendencias(version: str):
+    conn = db.connect()
+    try:
+        return trends.get_trends(conn)
+    finally:
+        conn.close()
+
+
+@st.cache_data(show_spinner=False)
 def calcular_scores(version: str, pesos: tuple[float, float, float, float]):
     players, fixtures, _teams, _last = cargar_datos(version)
     return engine.score_players(players, fixtures, engine.Weights(*pesos))
@@ -228,7 +237,15 @@ def team_name(teams, tid):
     return teams[tid].name if tid in teams else "?"
 
 
-def scores_to_df(scores, teams, en_plantilla: set[int]) -> pd.DataFrame:
+def _trend_txt(trend_map, pid) -> str:
+    t = trend_map.get(pid) if trend_map else None
+    if not t or t.direction == "new":
+        return ""
+    signo = "+" if t.change > 0 else ""
+    return f"{t.emoji} {signo}{t.pct:.1f}%"
+
+
+def scores_to_df(scores, teams, en_plantilla: set[int], trend_map=None) -> pd.DataFrame:
     filas = []
     for s in scores:
         p = s.player
@@ -240,6 +257,7 @@ def scores_to_df(scores, teams, en_plantilla: set[int]) -> pd.DataFrame:
             "Pos": POS.get(p.position_id, "?"),
             "Equipo": team_name(teams, p.team_id),
             "Precio": p.market_value,
+            "Tendencia": _trend_txt(trend_map, p.id),
             "Score": s.score,
             "Pts esp.": lineup.expected_points(s),
             "Comprar hasta": adv.max_buy,
@@ -257,7 +275,7 @@ def tabla_explorar(version: str, pesos: tuple, squad_key: tuple):
     tu plantilla (no en cada interacción)."""
     sc = calcular_scores(version, pesos)
     _, _, teams_, _ = cargar_datos(version)
-    return scores_to_df(sc, teams_, set(squad_key))
+    return scores_to_df(sc, teams_, set(squad_key), cargar_tendencias(version))
 
 
 @st.cache_data(show_spinner=False)
@@ -435,6 +453,24 @@ with st.sidebar.expander("🔐 Cuenta oficial (email y contraseña)"):
 scores = calcular_scores(version, pesos)
 score_por_id = {s.player.id: s for s in scores}
 squad_scores = [score_por_id[i] for i in squad_ids if i in score_por_id]
+tendencias = cargar_tendencias(version)
+
+
+def next_opp_txt(team_id: int) -> str:
+    op = engine.next_opponents(team_id, fixtures, n=1)
+    if not op:
+        return ""
+    rid, es_local, _ = op[0]
+    loc = "🏠 vs" if es_local else "✈️ @"
+    return f"{loc} {team_name(teams, rid)}"
+
+
+def trend_line(pid: int) -> str:
+    t = tendencias.get(pid)
+    if not t or t.direction == "new":
+        return ""
+    signo = "+" if t.change > 0 else ""
+    return f"{t.emoji} valor {t.label} ({signo}{t.pct:.1f}%)"
 
 # Modelo de dinero (idéntico a LaLiga): para_gastar - pujas = disponible.
 valor_plantilla = sum(mv_by_id.get(pid, 0) for pid in squad_ids)
@@ -448,16 +484,48 @@ rec = _recomendaciones(version, pesos, disponible, tuple(sorted(squad_ids)))
 def tarjeta(s):
     p = s.player
     adv = market.price_advice(s)
+    tl = trend_line(p.id)
+    opp = next_opp_txt(p.team_id)
     st.markdown(
         f"**{p.nickname}** · {POS.get(p.position_id,'?')} · {team_name(teams, p.team_id)}  \n"
-        f"💰 {fmt_eur(p.market_value)} · ⭐ **{s.score}** · 📈 {s.forma} · {p.status_es}  \n"
-        f"🛒 comprar hasta **{fmt_eur(adv.max_buy)}** · 🏷️ vender por **{fmt_eur(adv.sell_ask)}**")
+        f"💰 {fmt_eur(p.market_value)} · ⭐ **{s.score}** · 📈 forma {s.forma} · {p.status_es}  \n"
+        f"🛒 comprar hasta **{fmt_eur(adv.max_buy)}** · 🏷️ vender por **{fmt_eur(adv.sell_ask)}**"
+        + (f"  \n{tl}" if tl else "")
+        + (f"  \n📅 Próximo: {opp}" if opp else ""))
 
 
 # ---- Pestañas ------------------------------------------------------------
-tabs = st.tabs(["🎯 Recomendaciones", "🧢 Alineación", "🔎 Fichajes",
+tabs = st.tabs(["🎯 Recomendaciones", "🔥 Chollos", "🧢 Alineación", "🔎 Fichajes",
                 "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla"])
-tab_rec, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant = tabs
+tab_rec, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant = tabs
+
+with tab_chollos:
+    st.subheader("🔥 Chollos de la jornada")
+    st.caption("Los que más puntos esperados dan por cada millón de euros, para "
+               "reforzar barato de cara a la próxima jornada.")
+    cc1, cc2 = st.columns(2)
+    precio_ch = cc1.slider("Precio máximo (M€)", 1, 50, 10, key="chollo_precio")
+    pos_ch = cc2.selectbox("Posición", ["Todas", "POR", "DEF", "MED", "DEL"], key="chollo_pos")
+    pos_id = {"POR": 1, "DEF": 2, "MED": 3, "DEL": 4}.get(pos_ch)
+    lista = picks.chollos_jornada(scores, max_price=precio_ch * 1_000_000,
+                                  position_id=pos_id, n=15)
+    if not lista:
+        st.write("_No hay chollos con esos filtros._")
+    filas = []
+    for s in lista:
+        p = s.player
+        filas.append({
+            "Jugador": p.nickname,
+            "Pos": POS.get(p.position_id, "?"),
+            "Equipo": team_name(teams, p.team_id),
+            "Precio": fmt_eur(p.market_value),
+            "Pts esp.": lineup.expected_points(s),
+            "Pts/M€": round(picks.value_per_million(s), 2),
+            "Tendencia": _trend_txt(tendencias, p.id),
+            "Próximo rival": next_opp_txt(p.team_id),
+        })
+    if filas:
+        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
 
 # --- Recomendaciones ---
 with tab_rec:
@@ -519,6 +587,7 @@ with tab_11:
                     "Pos": POS.get(s.player.position_id, "?"),
                     "Equipo": team_name(teams, s.player.team_id),
                     "Pts esp.": lineup.expected_points(s),
+                    "Próximo rival": next_opp_txt(s.player.team_id),
                     "Estado": s.player.status_es,
                 }
             orden = {1: 0, 2: 1, 3: 2, 4: 3}
@@ -559,6 +628,13 @@ with tab_fich:
         c.metric("Cláusula a ponerle", fmt_eur(adv.suggested_clause))
         st.markdown(f"**Score {target.score}/100** · Pts esperados {lineup.expected_points(target)} · "
                     f"Encaje {fit_emoji} **{fit}** — {motivo}")
+        _tl = trend_line(target.player.id)
+        _opp = next_opp_txt(target.player.team_id)
+        if _tl or _opp:
+            st.markdown("  ·  ".join(x for x in (_tl, (f"📅 Próximo: {_opp}" if _opp else "")) if x))
+        t_obj = tendencias.get(target.player.id)
+        if t_obj and t_obj.direction == "up":
+            st.caption("💡 Su valor está subiendo: si lo quieres, fíchalo antes de que suba más.")
         if fit == "NO_ENCAJA":
             st.info("Puede ser buen jugador, pero **ahora mismo no te aporta**: ya vas cubierto "
                     "en esa posición. Fíchalo solo si vendes al que desplaza.")
@@ -791,11 +867,20 @@ with tab_plant:
                 "Score": s.score,
                 "Pts esp.": lineup.expected_points(s),
                 "Vender por": fmt_eur(adv.sell_ask),
-                "Cláusula sug.": fmt_eur(adv.suggested_clause),
+                "Tendencia": _trend_txt(tendencias, s.player.id),
+                "Próximo rival": next_opp_txt(s.player.team_id),
                 "Estado": s.player.status_es,
                 "Consejo": "🔴 VENDER" if s in rec.vender else "🟢 Mantener",
             })
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
+
+        # Aviso de valor a la baja (buen momento para vender antes de que caiga más).
+        bajando = [s for s in squad_scores
+                   if (tendencias.get(s.player.id) and tendencias[s.player.id].direction == "down")]
+        if bajando:
+            nombres = ", ".join(s.player.nickname for s in
+                                sorted(bajando, key=lambda s: tendencias[s.player.id].pct)[:5])
+            st.warning(f"📉 Bajando de valor (plantéate vender antes de que caiga más): **{nombres}**")
 
         st.markdown("**Vender / poner en venta un jugador:**")
         vopts = {f"{s.player.nickname} ({POS.get(s.player.position_id,'?')})": s

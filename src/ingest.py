@@ -27,6 +27,9 @@ def run_ingest(db_path: str | Path = db.DEFAULT_DB, client: FantasyClient | None
         fixtures = client.get_all_fixtures()
         n_fixtures = db.upsert_fixtures(conn, fixtures)
 
+        # Snapshot del valor de mercado para poder ver tendencias (sube/baja).
+        db.record_values(conn, players)
+
         db.set_meta(conn, "last_ingest", dt.datetime.now().isoformat(timespec="seconds"))
 
         return {"teams": n_teams, "players": n_players, "fixtures": n_fixtures}

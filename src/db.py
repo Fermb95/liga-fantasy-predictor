@@ -148,6 +148,14 @@ CREATE TABLE IF NOT EXISTS meta (
     value TEXT
 );
 
+-- Histórico del valor de mercado (un snapshot por jugador y fecha de ingesta).
+CREATE TABLE IF NOT EXISTS value_history (
+    player_id    INTEGER NOT NULL,
+    date         TEXT NOT NULL,
+    market_value INTEGER NOT NULL,
+    PRIMARY KEY (player_id, date)
+);
+
 -- Cuentas de usuario (contraseña cifrada con PBKDF2 + salt).
 CREATE TABLE IF NOT EXISTS users (
     id                   INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -363,3 +371,38 @@ def get_teams(conn: sqlite3.Connection) -> list[Team]:
         Team(id=r["id"], name=r["name"], badge=r["badge"])
         for r in conn.execute("SELECT * FROM teams")
     ]
+
+
+# ---- Histórico de valor de mercado --------------------------------------
+def record_values(conn: sqlite3.Connection, players: list[Player], date: str | None = None) -> int:
+    """Guarda un snapshot del valor de mercado de cada jugador para la fecha dada
+    (por defecto hoy). Idempotente por (player_id, date)."""
+    import datetime as _dt
+    date = date or _dt.date.today().isoformat()
+    conn.executemany(
+        """INSERT INTO value_history (player_id, date, market_value) VALUES (?, ?, ?)
+           ON CONFLICT(player_id, date) DO UPDATE SET market_value=excluded.market_value""",
+        [(p.id, date, p.market_value) for p in players],
+    )
+    conn.commit()
+    return len(players)
+
+
+def value_history_two_latest(conn: sqlite3.Connection) -> tuple[dict[int, int], dict[int, int]]:
+    """Devuelve (valores_de_la_fecha_más_reciente, valores_de_la_anterior)."""
+    dates = [r["date"] for r in conn.execute(
+        "SELECT DISTINCT date FROM value_history ORDER BY date DESC LIMIT 2")]
+    if not dates:
+        return {}, {}
+    latest = {r["player_id"]: r["market_value"] for r in conn.execute(
+        "SELECT player_id, market_value FROM value_history WHERE date=?", (dates[0],))}
+    prev = {}
+    if len(dates) > 1:
+        prev = {r["player_id"]: r["market_value"] for r in conn.execute(
+            "SELECT player_id, market_value FROM value_history WHERE date=?", (dates[1],))}
+    return latest, prev
+
+
+def get_value_history(conn: sqlite3.Connection, player_id: int) -> list[tuple[str, int]]:
+    return [(r["date"], r["market_value"]) for r in conn.execute(
+        "SELECT date, market_value FROM value_history WHERE player_id=? ORDER BY date", (player_id,))]
