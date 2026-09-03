@@ -163,9 +163,10 @@ uid = st.session_state["user_id"]
 
 # Escribe el token en el navegador durante el render normal (sin rerun que lo
 # corte), para que la sesión se recuerde al recargar.
-if st.session_state.get("session_token"):
+if st.session_state.get("session_token") and not st.session_state.get("_token_saved"):
     try:
         localS.setItem(SESSION_LS_KEY, st.session_state["session_token"], key="ls_sess_set")
+        st.session_state["_token_saved"] = True
     except Exception:
         pass
 
@@ -248,6 +249,21 @@ def scores_to_df(scores, teams, en_plantilla: set[int]) -> pd.DataFrame:
             "En tu equipo": "✅" if tuyo else "",
         })
     return pd.DataFrame(filas)
+
+
+@st.cache_data(show_spinner=False)
+def tabla_explorar(version: str, pesos: tuple, squad_key: tuple):
+    """Tabla de Explorar cacheada: solo se recalcula si cambian datos, pesos o
+    tu plantilla (no en cada interacción)."""
+    sc = calcular_scores(version, pesos)
+    _, _, teams_, _ = cargar_datos(version)
+    return scores_to_df(sc, teams_, set(squad_key))
+
+
+@st.cache_data(show_spinner=False)
+def _recomendaciones(version: str, pesos: tuple, disponible: int, squad_key: tuple):
+    sc = calcular_scores(version, pesos)
+    return recommender.recommend(sc, budget=disponible, squad_ids=set(squad_key))
 
 
 # ---- Carga de datos + cabecera ------------------------------------------
@@ -425,7 +441,7 @@ valor_plantilla = sum(mv_by_id.get(pid, 0) for pid in squad_ids)
 bv = team_state.budget_view(budget, active_bids, valor_plantilla)
 disponible = bv.disponible
 
-rec = recommender.recommend(scores, budget=disponible, squad_ids=squad_ids)
+rec = _recomendaciones(version, pesos, disponible, tuple(sorted(squad_ids)))
 
 
 # ---- Tarjeta -------------------------------------------------------------
@@ -659,7 +675,7 @@ with tab_expl:
     solo_ok = f3.checkbox("Solo disponibles", value=True)
     buscar = f4.text_input("Buscar jugador")
 
-    df = scores_to_df(scores, teams, squad_ids)
+    df = tabla_explorar(version, pesos, tuple(sorted(squad_ids)))
     if pos_sel:
         df = df[df["Pos"].isin(pos_sel)]
     df = df[df["Precio"] <= precio_max * 1_000_000]

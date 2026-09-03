@@ -25,6 +25,21 @@ def using_turso() -> bool:
     return bool(url and token)
 
 
+# Cliente Turso compartido y esquema aplicado una sola vez (rendimiento: evita
+# recrear el cliente HTTP y reaplicar el esquema en cada db.connect()).
+_turso_client = None
+_turso_schema_done = False
+
+
+def _get_turso_client(url: str, token: str):
+    global _turso_client
+    if _turso_client is None:
+        import libsql_client
+        u = url.replace("libsql://", "https://") if url.startswith("libsql://") else url
+        _turso_client = libsql_client.create_client_sync(url=u, auth_token=token)
+    return _turso_client
+
+
 # ---- Adaptador Turso: expone la misma interfaz que sqlite3.Connection --------
 class _TursoCursor:
     """Cursor sobre un ResultSet de libsql_client; devuelve filas como dict."""
@@ -52,15 +67,17 @@ class _TursoCursor:
 class _TursoConnection:
     """Conexión a Turso con la interfaz mínima de sqlite3 que usa la app."""
     def __init__(self, url: str, token: str, client=None, libsql=None):
+        global _turso_schema_done
         if libsql is None:
             import libsql_client as libsql
         self._libsql = libsql
-        if client is None:
-            u = url.replace("libsql://", "https://") if url.startswith("libsql://") else url
-            client = libsql.create_client_sync(url=u, auth_token=token)
-        self._c = client
-        self.executescript(SCHEMA)
-        _migrate(self)
+        self._c = client if client is not None else _get_turso_client(url, token)
+        # El esquema/migración se aplican una única vez por proceso, no en cada
+        # conexión (con Turso cada sentencia es una llamada de red).
+        if not _turso_schema_done:
+            self.executescript(SCHEMA)
+            _migrate(self)
+            _turso_schema_done = True
 
     def execute(self, sql, params=()):
         rs = self._c.execute(sql, list(params)) if params else self._c.execute(sql)
@@ -80,10 +97,7 @@ class _TursoConnection:
         pass  # libsql_client hace autocommit por sentencia
 
     def close(self):
-        try:
-            self._c.close()
-        except Exception:
-            pass
+        pass  # cliente compartido y cacheado: no se cierra en cada uso
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS teams (
