@@ -83,13 +83,16 @@ def test_ventas_activas(conn):
     assert ts.get_listings(conn) == {}
 
 
-def test_budget_view_escenarios():
-    bids = {10: 3_000_000, 11: 2_000_000}          # 5M retenidos
-    listings = {20: 8_000_000}                     # pides 8M
-    mv = {20: 7_000_000}                           # su valor real 7M
-    bv = ts.budget_view(4_000_000, bids, listings, mv)
-    assert bv.disponible == 4_000_000
-    assert bv.comprometido_pujas == 5_000_000
-    assert bv.si_fallan_pujas == 9_000_000         # 4M + 5M
-    assert bv.si_vendo_pedido == 12_000_000        # 4M + 8M
-    assert bv.si_vendo_mercado == 11_000_000       # 4M + 7M
+def test_budget_view_modelo_laliga():
+    bids = {10: 3_000_000, 11: 2_000_000}          # 5M en pujas
+    bv = ts.budget_view(20_000_000, bids, valor_plantilla=88_000_000)
+    assert bv.para_gastar == 20_000_000
+    assert bv.en_pujas == 5_000_000
+    assert bv.disponible == 15_000_000             # 20M - 5M
+    assert bv.valor_plantilla == 88_000_000
+
+
+def test_budget_view_sin_pujas():
+    bv = ts.budget_view(10_000_000, {})
+    assert bv.en_pujas == 0
+    assert bv.disponible == 10_000_000

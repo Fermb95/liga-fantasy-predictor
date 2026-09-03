@@ -163,27 +163,20 @@ def get_listings(conn: sqlite3.Connection) -> dict[int, int]:
 
 @dataclass
 class BudgetView:
-    disponible: int          # dinero libre ahora (lo que muestra LaLiga)
-    comprometido_pujas: int  # dinero retenido en pujas activas
-    si_fallan_pujas: int     # disponible + pujas (si te las devuelven)
-    en_venta_pedido: int     # suma de precios que pides por lo que tienes en venta
-    en_venta_mercado: int    # suma del valor de mercado de lo que tienes en venta
-    si_vendo_pedido: int     # disponible + lo que pides por tus ventas
-    si_vendo_mercado: int    # disponible + valor de mercado de tus ventas (más realista)
+    """Modelo de dinero idéntico al de LaLiga Fantasy."""
+    valor_plantilla: int     # suma del valor de mercado de tus jugadores + entrenador
+    para_gastar: int         # dinero total que te da LaLiga para fichar (X)
+    en_pujas: int            # suma de tus pujas activas (se resta del disponible)
+    disponible: int          # para_gastar - en_pujas (lo realmente libre ahora)
 
 
-def budget_view(disponible: int, bids: dict[int, int], listings: dict[int, int],
-                market_value_by_id: dict[int, int]) -> BudgetView:
-    """Calcula los distintos 'presupuestos' según pujas y ventas activas."""
-    comprometido = sum(bids.values())
-    pedido = sum(listings.values())
-    mercado = sum(market_value_by_id.get(pid, 0) for pid in listings)
+def budget_view(para_gastar: int, bids: dict[int, int],
+                valor_plantilla: int = 0) -> BudgetView:
+    """Calcula el desglose de dinero: para gastar, en pujas y disponible."""
+    en_pujas = sum(bids.values())
     return BudgetView(
-        disponible=disponible,
-        comprometido_pujas=comprometido,
-        si_fallan_pujas=disponible + comprometido,
-        en_venta_pedido=pedido,
-        en_venta_mercado=mercado,
-        si_vendo_pedido=disponible + pedido,
-        si_vendo_mercado=disponible + mercado,
+        valor_plantilla=int(valor_plantilla),
+        para_gastar=int(para_gastar),
+        en_pujas=en_pujas,
+        disponible=int(para_gastar) - en_pujas,
     )

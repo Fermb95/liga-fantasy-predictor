@@ -179,8 +179,9 @@ if not configurado:
     st.sidebar.info("Carga tu plantilla y tu dinero **una vez**. A partir de ahí, cada "
                     "compra o venta que registres actualiza todo solo.")
     budget = st.sidebar.number_input(
-        "Dinero disponible (€)", min_value=0, value=int(budget_saved or 0),
-        step=250_000, format="%d")
+        "Dinero para gastar (€)", min_value=0, value=int(budget_saved or 0),
+        step=250_000, format="%d",
+        help="El dinero total que te da LaLiga para fichar (antes de restar tus pujas).")
     st.sidebar.caption(f"= {fmt_eur(budget)}")
     sel = st.sidebar.multiselect("Tu plantilla actual", list(opciones.keys()))
     sel_ids = {opciones[s] for s in sel}
@@ -195,9 +196,10 @@ if not configurado:
 else:
     # ----- Modo automático: todo se actualiza con tus compras/ventas -----
     budget = budget_saved
-    st.sidebar.metric("💵 Dinero disponible", fmt_eur(budget))
-    st.sidebar.caption(f"👥 {len(roster_ids)} jugadores · se actualiza solo con tus "
-                       "compras y ventas")
+    _disp = budget - sum(active_bids.values())
+    st.sidebar.metric("💰 Dinero para gastar", fmt_eur(budget))
+    st.sidebar.caption(f"✅ Disponible (menos pujas): **{fmt_eur(_disp)}** · "
+                       f"👥 {len(roster_ids)} jugadores · se actualiza solo")
     squad_ids = roster_ids
 
     with st.sidebar.expander("✏️ Corregir plantilla o dinero (manual)"):
@@ -206,7 +208,7 @@ else:
         default_squad = [id_a_label[i] for i in roster_ids if i in id_a_label]
         sel = st.multiselect("Plantilla", list(opciones.keys()), default=default_squad,
                              key=f"squad_edit_{hash(frozenset(roster_ids))}")
-        nb = st.number_input("Dinero disponible (€)", min_value=0, value=int(budget),
+        nb = st.number_input("Dinero para gastar (€)", min_value=0, value=int(budget),
                              step=250_000, format="%d", key=f"budget_edit_{budget}")
         if st.button("Guardar cambios manuales", use_container_width=True):
             c = db.connect()
@@ -261,7 +263,13 @@ with st.sidebar.expander("🔐 Cuenta oficial (email y contraseña)"):
 scores = calcular_scores(version, pesos)
 score_por_id = {s.player.id: s for s in scores}
 squad_scores = [score_por_id[i] for i in squad_ids if i in score_por_id]
-rec = recommender.recommend(scores, budget=budget, squad_ids=squad_ids)
+
+# Modelo de dinero (idéntico a LaLiga): para_gastar - pujas = disponible.
+valor_plantilla = sum(mv_by_id.get(pid, 0) for pid in squad_ids)
+bv = team_state.budget_view(budget, active_bids, valor_plantilla)
+disponible = bv.disponible
+
+rec = recommender.recommend(scores, budget=disponible, squad_ids=squad_ids)
 
 
 # ---- Tarjeta -------------------------------------------------------------
@@ -275,8 +283,6 @@ def tarjeta(s):
 
 
 # ---- Pestañas ------------------------------------------------------------
-bv = team_state.budget_view(budget, active_bids, active_listings, mv_by_id)
-
 tabs = st.tabs(["🎯 Recomendaciones", "🧢 Alineación", "🔎 Fichajes",
                 "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla"])
 tab_rec, tab_11, tab_fich, tab_dinero, tab_expl, tab_plant = tabs
@@ -382,7 +388,7 @@ with tab_fich:
                               step=100_000, format="%d")
         if bid > adv.max_buy:
             st.warning(f"Ojo: estás por encima de la puja máxima recomendada ({fmt_eur(adv.max_buy)}).")
-        plan = advisor.bid_plan(target, bid, budget, squad_scores)
+        plan = advisor.bid_plan(target, bid, disponible, squad_scores)
 
         if plan.substitute_out:
             st.write(f"↔️ En su puesto desplazaría a **{plan.substitute_out.player.nickname}** "
@@ -417,14 +423,19 @@ with tab_fich:
 
 # --- Dinero (escenarios + pujas + ventas) ---
 with tab_dinero:
-    st.subheader("Tu dinero, con pujas y ventas en curso")
-    m1, m2, m3 = st.columns(3)
-    m1.metric("💵 Disponible ahora", fmt_eur(bv.disponible),
-              help="El que muestra LaLiga (ya descontadas tus pujas retenidas).")
-    m2.metric("↩️ Si fallan mis pujas", fmt_eur(bv.si_fallan_pujas),
-              help=f"Disponible + {fmt_eur(bv.comprometido_pujas)} retenidos en pujas.")
-    m3.metric("🏷️ Si vendo lo listado", fmt_eur(bv.si_vendo_mercado),
-              help="Disponible + valor de mercado de lo que tienes en venta.")
+    st.subheader("Tu dinero")
+    m1, m2 = st.columns(2)
+    m1.metric("💼 Valor de tu plantilla", fmt_eur(bv.valor_plantilla),
+              help="Suma del valor de mercado de todos tus jugadores y entrenador.")
+    m2.metric("💰 Dinero para gastar", fmt_eur(bv.para_gastar),
+              help="El total que te da LaLiga para fichar (lo que pones en la barra lateral).")
+    m3, m4 = st.columns(2)
+    m3.metric("📌 En pujas", ("− " + fmt_eur(bv.en_pujas)) if bv.en_pujas else "0 €",
+              help="Suma de tus pujas activas (dinero retenido).")
+    m4.metric("✅ Disponible", fmt_eur(bv.disponible),
+              help="Dinero para gastar menos lo que tienes en pujas.")
+    if bv.disponible < 0:
+        st.warning("Tus pujas superan tu dinero para gastar: revisa importes.")
 
     st.markdown("### 📌 Pujas activas (dinero retenido)")
     st.caption("Edita la puja si la cambiaste; pulsa ✅ Comprado si te lo llevaste "
@@ -546,10 +557,10 @@ with tab_expl:
                 step=100_000, format="%d", key=f"mbid_{s.player.id}")
             targets.append((s, int(bid)))
         if targets:
-            plan = compare.multi_bid_plan(targets, budget, squad_scores)
+            plan = compare.multi_bid_plan(targets, disponible, squad_scores)
             a, b, c = st.columns(3)
             a.metric("Coste total", fmt_eur(plan.total_cost))
-            b.metric("Tu dinero", fmt_eur(budget))
+            b.metric("Disponible", fmt_eur(disponible))
             c.metric("Dinero después", fmt_eur(plan.cash_after))
             if plan.affordable:
                 st.success("✅ Te llega con tu dinero, sin vender nada.")
@@ -585,7 +596,7 @@ with tab_plant:
         valor = sum(s.player.market_value for s in squad_scores)
         m1, m2, m3 = st.columns(3)
         m1.metric("Valor de tu plantilla", fmt_eur(valor))
-        m2.metric("Dinero disponible", fmt_eur(budget))
+        m2.metric("Disponible", fmt_eur(disponible))
         m3.metric("A vender (aviso)", len(rec.vender))
 
         filas = []
