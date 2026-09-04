@@ -504,13 +504,17 @@ def tarjeta(s):
         + (f"  \n📅 Próximo: {opp}" if opp else ""))
 
 
-# ---- Pestañas ------------------------------------------------------------
-tabs = st.tabs(["🎯 Recomendaciones", "🛒 Mi mercado", "🔥 Chollos", "🧢 Alineación",
-                "🔎 Fichajes", "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"])
-(tab_rec, tab_mimercado, tab_chollos, tab_11, tab_fich, tab_dinero, tab_expl,
- tab_plant, tab_detalle) = tabs
+# ---- Navegación (recuerda la sección; no salta al registrar acciones) ----
+PAGINAS = ["🎯 Recomendaciones", "🛒 Mi mercado", "🔥 Chollos", "🧢 Alineación",
+           "🔎 Fichajes", "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"]
+if hasattr(st, "segmented_control"):
+    page = st.segmented_control("Sección", PAGINAS, key="nav",
+                                label_visibility="collapsed", default=PAGINAS[0]) or PAGINAS[0]
+else:
+    page = st.radio("Sección", PAGINAS, key="nav", horizontal=True,
+                    label_visibility="collapsed")
 
-with tab_mimercado:
+if page == "🛒 Mi mercado":
     st.subheader("🛒 Mi mercado")
     st.caption("Añade los jugadores que te salen ahora (escribe y selecciona; quítalos "
                "con la ✕). Te digo cuáles fichar según tu dinero, tu plantilla y lo que "
@@ -565,7 +569,7 @@ with tab_mimercado:
         st.caption("Verdictos: 🟢 fichar (te llega ya) · 🟠 sí, pero vende antes · "
                    "🟡 dudoso · 🔴 pasa (no encaja o no rinde) · ⛔ no te llega ni vendiendo.")
 
-with tab_chollos:
+if page == "🔥 Chollos":
     st.subheader("🔥 Chollos de la jornada")
     st.caption("Los que más puntos esperados dan por cada millón de euros, para "
                "reforzar barato de cara a la próxima jornada.")
@@ -594,7 +598,7 @@ with tab_chollos:
         st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True)
 
 # --- Recomendaciones ---
-with tab_rec:
+if page == "🎯 Recomendaciones":
     col1, col2, col3 = st.columns(3)
     with col1:
         st.subheader(f"🟢 COMPRAR ({len(rec.comprar)})")
@@ -617,7 +621,7 @@ with tab_rec:
             tarjeta(s); st.divider()
 
 # --- Alineación (capitán + once ideal) ---
-with tab_11:
+if page == "🧢 Alineación":
     _no_jugadas = [f.week for f in fixtures if f.match_state != engine.MATCH_FINISHED]
     proxima_j = min(_no_jugadas) if _no_jugadas else "?"
     st.subheader(f"Tu mejor alineación para la jornada {proxima_j}")
@@ -667,7 +671,7 @@ with tab_11:
                              use_container_width=True, hide_index=True)
 
 # --- Fichajes (asesor de puja) ---
-with tab_fich:
+if page == "🔎 Fichajes":
     st.subheader("¿Fichar a este jugador?")
     st.caption("Busca al jugador (lo ves en tu mercado de LaLiga) y te digo si es chollo, "
                "hasta cuánto pujar, si te encaja y a quién vender.")
@@ -745,7 +749,7 @@ with tab_fich:
             st.rerun()
 
 # --- Dinero (escenarios + pujas + ventas) ---
-with tab_dinero:
+if page == "💰 Dinero":
     st.subheader("Tu dinero")
     m1, m2 = st.columns(2)
     m1.metric("💼 Valor de tu plantilla", fmt_eur(bv.valor_plantilla),
@@ -809,7 +813,7 @@ with tab_dinero:
         st.caption("No tienes jugadores en venta. Ponlos en venta desde la pestaña 🧮 Tu plantilla.")
 
 # --- Explorar ---
-with tab_expl:
+if page == "📋 Explorar":
     st.subheader("Explorar todos los jugadores")
     f1, f2, f3, f4 = st.columns(4)
     pos_sel = f1.multiselect("Posición", list(POS.values()))
@@ -911,7 +915,7 @@ with tab_expl:
                 st.caption(f"⚠️ {n}")
 
 # --- Tu plantilla ---
-with tab_plant:
+if page == "🧮 Tu plantilla":
     st.subheader("Tu plantilla")
     if not squad_scores:
         st.info("Guarda tu plantilla en la barra lateral para analizarla.")
@@ -982,7 +986,7 @@ with tab_plant:
 
 
 # --- Detalle de jugador ---
-with tab_detalle:
+if page == "🔍 Jugador":
     st.subheader("🔍 Detalle de jugador")
     dopts = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
              for p in sorted(players, key=lambda x: x.nickname)}
