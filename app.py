@@ -506,7 +506,7 @@ def tarjeta(s):
 
 # ---- Navegación (recuerda la sección; no salta al registrar acciones) ----
 PAGINAS = ["🎯 Recomendaciones", "🛒 Mi mercado", "🔥 Chollos", "🧢 Alineación",
-           "🔎 Fichajes", "💰 Dinero", "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"]
+           "📋 Explorar", "🧮 Tu plantilla", "🔍 Jugador"]
 if hasattr(st, "segmented_control"):
     page = st.segmented_control("Sección", PAGINAS, key="nav",
                                 label_visibility="collapsed", default=PAGINAS[0]) or PAGINAS[0]
@@ -516,58 +516,156 @@ else:
 
 if page == "🛒 Mi mercado":
     st.subheader("🛒 Mi mercado")
-    st.caption("Añade los jugadores que te salen ahora (escribe y selecciona; quítalos "
-               "con la ✕). Te digo cuáles fichar según tu dinero, tu plantilla y lo que "
-               "te hace falta reforzar.")
-    opciones_mm = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
-                   for p in sorted(players, key=lambda x: x.nickname)}
-    id_a_label_mm = {v: k for k, v in opciones_mm.items()}
-    default_mm = [id_a_label_mm[i] for i in market_ids if i in id_a_label_mm]
-    sel_mm = st.multiselect("Jugadores en tu mercado ahora", list(opciones_mm.keys()),
-                            default=default_mm, key="mm_sel",
-                            label_visibility="collapsed")
-    sel_mm_ids = {opciones_mm[s] for s in sel_mm}
-    if sel_mm_ids != market_ids:  # guardado fluido (sin botón)
-        c = db.connect(); team_state.set_market_players(c, uid, sel_mm_ids); c.close()
-        market_ids = sel_mm_ids
+    b1, b2, b3, b4 = st.columns(4)
+    b1.metric("💰 Para gastar", fmt_eur(bv.para_gastar))
+    b2.metric("📌 En pujas", ("− " + fmt_eur(bv.en_pujas)) if bv.en_pujas else "0 €")
+    b3.metric("✅ Disponible", fmt_eur(bv.disponible))
+    b4.metric("💼 Valor plantilla", fmt_eur(bv.valor_plantilla))
+    if bv.disponible < 0:
+        st.warning("Tus pujas superan tu dinero para gastar: revisa importes.")
 
-    if not sel_mm_ids:
-        st.info("Aún no has añadido nada. Escribe arriba los jugadores de tu mercado.")
+    modo = st.segmented_control(
+        "modo", ["🟢 Comprar", "🔴 Vender", "⏳ En curso"], key="mm_modo",
+        label_visibility="collapsed", default="🟢 Comprar") or "🟢 Comprar"
+    st.divider()
+
+    # ===================== COMPRAR =====================
+    if modo == "🟢 Comprar":
+        st.caption("Añade los jugadores que te salen ahora (escribe y selecciona; quítalos "
+                   "con la ✕). Te digo a quién pujar y con cuánto.")
+        opciones_mm = {f"{p.nickname} · {team_name(teams, p.team_id)} ({POS.get(p.position_id,'?')})": p.id
+                       for p in sorted(players, key=lambda x: x.nickname)}
+        id_a_label_mm = {v: k for k, v in opciones_mm.items()}
+        default_mm = [id_a_label_mm[i] for i in market_ids if i in id_a_label_mm]
+        sel_mm = st.multiselect("Tu mercado ahora", list(opciones_mm.keys()),
+                                default=default_mm, key="mm_sel", label_visibility="collapsed")
+        sel_mm_ids = {opciones_mm[s] for s in sel_mm}
+        if sel_mm_ids != market_ids:
+            c = db.connect(); team_state.set_market_players(c, uid, sel_mm_ids); c.close()
+            market_ids = sel_mm_ids
+
+        if not sel_mm_ids:
+            st.info("Aún no has añadido nada. Escribe arriba los jugadores de tu mercado.")
+        else:
+            market_scores = [score_por_id[i] for i in sel_mm_ids if i in score_por_id]
+            ranking = mymarket.rank_market(market_scores, squad_scores, disponible, tendencias)
+            fichar = [r for r in ranking if r.verdict == "🟢 Fichar"]
+            if fichar:
+                st.success("**Compra primero:** " + ", ".join(
+                    f"{r.ps.player.nickname} (hasta {fmt_eur(r.max_buy)})" for r in fichar[:3]))
+            for r in ranking:
+                p = r.ps.player
+                _t = _trend_txt(tendencias, p.id)
+                _o = next_opp_txt(p.team_id)
+                st.markdown(
+                    f"**{r.verdict} · {p.nickname}** · {POS.get(p.position_id,'?')} · "
+                    f"{team_name(teams, p.team_id)} · {fmt_eur(p.market_value)}  \n"
+                    f"Puja máx **{fmt_eur(r.max_buy)}** · encaje {r.fit} · {r.expected} pts esp."
+                    + (f" · {_t}" if _t else "") + (f" · 📅 {_o}" if _o else ""))
+                a, b, cc = st.columns([2, 1, 1])
+                bid = a.number_input("Tu puja", min_value=0, value=int(r.max_buy), step=100_000,
+                                     format="%d", key=f"mmbid_{p.id}", label_visibility="collapsed")
+                if b.button("📌 Pujar", key=f"mmpuja_{p.id}", use_container_width=True):
+                    c = db.connect(); team_state.add_bid(c, uid, p.id, bid); c.close(); st.rerun()
+                if cc.button("✅ Comprado", key=f"mmcomp_{p.id}", use_container_width=True):
+                    c = db.connect()
+                    team_state.remove_bid(c, uid, p.id)
+                    team_state.buy_player(c, uid, p.id, bid)
+                    team_state.remove_market_player(c, uid, p.id)
+                    c.close(); st.rerun()
+                if r.afford == "vendiendo":
+                    plan = advisor.bid_plan(r.ps, r.max_buy, disponible, squad_scores)
+                    vende = [x.player.nickname for x in (
+                        ([plan.substitute_out] if plan.sell_substitute and plan.substitute_out else [])
+                        + plan.extra_sells)]
+                    if vende:
+                        st.caption("↔️ Para ficharlo tendrías que vender: " + ", ".join(vende))
+                st.divider()
+            st.caption("Veredictos: 🟢 fichar (te llega) · 🟠 sí, pero vende antes · 🟡 dudoso · "
+                       "🔴 pasa · ⛔ no te llega.")
+
+    # ===================== VENDER =====================
+    elif modo == "🔴 Vender":
+        if not squad_scores:
+            st.info("Guarda tu plantilla en la barra lateral para gestionarla.")
+        else:
+            if rec.vender:
+                st.warning("🔴 **Te recomiendo poner en venta** (rinden poco y no son "
+                           "imprescindibles): " + ", ".join(s.player.nickname for s in rec.vender))
+            if rec.imprescindibles:
+                nombres = ", ".join(s.player.nickname for s in squad_scores
+                                    if s.player.id in rec.imprescindibles)
+                st.info(f"🔒 No vendas a **{nombres}**: te dejarían sin poder formar el once.")
+            for s in sorted(squad_scores, key=lambda x: x.score):
+                p = s.player
+                sa = advisor.sell_advice(s)
+                if p.id in rec.imprescindibles:
+                    consejo = "🔒 no vender"
+                elif s in rec.vender:
+                    consejo = "🔴 vender"
+                else:
+                    consejo = "🟢 mantener"
+                marca = " · 🏷️ EN VENTA" if p.id in active_listings else ""
+                _t = _trend_txt(tendencias, p.id)
+                st.markdown(
+                    f"**{p.nickname}** · {POS.get(p.position_id,'?')} · {team_name(teams, p.team_id)} · "
+                    f"{fmt_eur(p.market_value)} · {consejo}{marca}  \n"
+                    f"Buen precio **{fmt_eur(sa.good_price)}** · mínimo a aceptar {fmt_eur(sa.min_accept)}"
+                    + (f" · {_t}" if _t else ""))
+                a, b, cc = st.columns([2, 1, 1])
+                precio = a.number_input("Precio venta", min_value=0, value=int(sa.good_price),
+                                        step=100_000, format="%d", key=f"mmsell_{p.id}",
+                                        label_visibility="collapsed")
+                if b.button("🏷️ En venta", key=f"mmlist_{p.id}", use_container_width=True):
+                    c = db.connect(); team_state.add_listing(c, uid, p.id, precio); c.close(); st.rerun()
+                if cc.button("✅ Vendido", key=f"mmsold_{p.id}", use_container_width=True):
+                    c = db.connect()
+                    team_state.remove_listing(c, uid, p.id)
+                    team_state.sell_player(c, uid, p.id, precio)
+                    c.close(); st.rerun()
+                st.divider()
+
+    # ===================== EN CURSO =====================
     else:
-        market_scores = [score_por_id[i] for i in sel_mm_ids if i in score_por_id]
-        ranking = mymarket.rank_market(market_scores, squad_scores, disponible, tendencias)
-        fichar = [r for r in ranking if r.verdict == "🟢 Fichar"]
-        vende_y_ficha = [r for r in ranking if r.verdict == "🟠 Sí, pero vende"]
-        if fichar:
-            st.success("**Compra primero (te llega ya):** " + ", ".join(
-                f"{r.ps.player.nickname} (hasta {fmt_eur(r.max_buy)})" for r in fichar[:3]))
-        elif vende_y_ficha:
-            st.info("No hay fichajes que te lleguen con el dinero actual. Merecen la pena "
-                    "**vendiendo antes**: " + ", ".join(r.ps.player.nickname for r in vende_y_ficha[:3]))
-        filas = []
-        for r in ranking:
-            p = r.ps.player
-            afford_txt = {"te_llega": "✅ te llega", "vendiendo": "↔️ vendiendo",
-                          "no_te_llega": "⛔ no te llega"}[r.afford]
-            filas.append({
-                "Prioridad": r.priority,
-                "Veredicto": r.verdict,
-                "Jugador": p.nickname,
-                "Pos": POS.get(p.position_id, "?"),
-                "Precio": fmt_eur(p.market_value),
-                "Pujar hasta": fmt_eur(r.max_buy),
-                "¿Te llega?": afford_txt,
-                "Score": r.ps.score,
-                "Pts esp.": r.expected,
-                "Encaje": r.fit,
-                "Tendencia": _trend_txt(tendencias, p.id),
-                "Próximo rival": next_opp_txt(p.team_id),
-            })
-        st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
-                     column_config={"Prioridad": st.column_config.ProgressColumn(
-                         "Prioridad", min_value=0, max_value=100, format="%.0f")})
-        st.caption("Verdictos: 🟢 fichar (te llega ya) · 🟠 sí, pero vende antes · "
-                   "🟡 dudoso · 🔴 pasa (no encaja o no rinde) · ⛔ no te llega ni vendiendo.")
+        st.markdown("### 📌 Pujas activas (dinero retenido)")
+        if active_bids:
+            for pid, amount in active_bids.items():
+                nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
+                st.markdown(f"**{nm}**")
+                e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
+                nuevo = e0.number_input("Puja (€)", min_value=0, value=int(amount), step=100_000,
+                                        format="%d", key=f"encbid_{pid}", label_visibility="collapsed")
+                if e1.button("✅ Comprado", key=f"encbuy_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.remove_bid(c, uid, pid)
+                    team_state.buy_player(c, uid, pid, nuevo); c.close(); st.rerun()
+                if e2.button("💾 Guardar", key=f"encsavebid_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.add_bid(c, uid, pid, nuevo); c.close(); st.rerun()
+                if e3.button("🗑️", key=f"encdelbid_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.remove_bid(c, uid, pid); c.close(); st.rerun()
+                st.divider()
+        else:
+            st.caption("No tienes pujas anotadas. Anótalas en 🟢 Comprar.")
+
+        st.markdown("### 🏷️ Jugadores que tienes en venta")
+        if active_listings:
+            for pid, ask in active_listings.items():
+                s = score_por_id.get(pid)
+                nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
+                minimo = advisor.sell_advice(s).min_accept if s else 0
+                st.markdown(f"**{nm}** · mínimo a aceptar {fmt_eur(minimo)}")
+                e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
+                nuevo = e0.number_input("Precio (€)", min_value=0, value=int(ask), step=100_000,
+                                        format="%d", key=f"enclist_{pid}", label_visibility="collapsed")
+                if e1.button("✅ Vendido", key=f"encsold_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.remove_listing(c, uid, pid)
+                    team_state.sell_player(c, uid, pid, nuevo); c.close(); st.rerun()
+                if e2.button("💾 Guardar", key=f"encsavelist_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.add_listing(c, uid, pid, nuevo); c.close(); st.rerun()
+                if e3.button("🗑️", key=f"encdellist_{pid}", use_container_width=True):
+                    c = db.connect(); team_state.remove_listing(c, uid, pid); c.close(); st.rerun()
+                st.divider()
+        else:
+            st.caption("No tienes jugadores en venta. Ponlos en venta en 🔴 Vender.")
 
 if page == "🔥 Chollos":
     st.subheader("🔥 Chollos de la jornada")
@@ -669,148 +767,6 @@ if page == "🧢 Alineación":
                 st.markdown("**Suplentes**")
                 st.dataframe(pd.DataFrame([fila_xi(s) for s in res.bench]),
                              use_container_width=True, hide_index=True)
-
-# --- Fichajes (asesor de puja) ---
-if page == "🔎 Fichajes":
-    st.subheader("¿Fichar a este jugador?")
-    st.caption("Busca al jugador (lo ves en tu mercado de LaLiga) y te digo si es chollo, "
-               "hasta cuánto pujar, si te encaja y a quién vender.")
-    fuera = [s for s in scores if s.player.id not in squad_ids
-             and s.player.status != "out_of_league"]
-    fuera.sort(key=lambda s: s.player.market_value, reverse=True)
-    opts = {f"{s.player.nickname} · {team_name(teams, s.player.team_id)} "
-            f"({POS.get(s.player.position_id,'?')}) — {fmt_eur(s.player.market_value)}": s
-            for s in fuera}
-    busca = st.text_input("Buscar jugador objetivo")
-    lista = [k for k in opts if not busca or busca.lower() in k.lower()]
-    elegido = st.selectbox("Jugador", ["—"] + lista)
-    if elegido != "—":
-        target = opts[elegido]
-        adv = market.price_advice(target)
-        fit, motivo = advisor.team_fit(target, squad_scores)
-
-        veredicto = {"CHOLLO": "🟢 CHOLLO — fíchalo", "MANTENER": "🟡 Correcto",
-                     "VENDER": "🔴 PASA — no rinde"}.get(target.signal, target.signal)
-        fit_emoji = {"ENCAJA": "🟢", "MEJORA": "🟢", "NO_ENCAJA": "🟠"}.get(fit, "")
-        a, b, c = st.columns(3)
-        a.metric("Veredicto", veredicto.split(" ", 1)[0], help=veredicto)
-        b.metric("Puja máxima", fmt_eur(adv.max_buy))
-        c.metric("Cláusula a ponerle", fmt_eur(adv.suggested_clause))
-        st.markdown(f"**Score {target.score}/100** · Pts esperados {lineup.expected_points(target)} · "
-                    f"Encaje {fit_emoji} **{fit}** — {motivo}")
-        _tl = trend_line(target.player.id)
-        _opp = next_opp_txt(target.player.team_id)
-        if _tl or _opp:
-            st.markdown("  ·  ".join(x for x in (_tl, (f"📅 Próximo: {_opp}" if _opp else "")) if x))
-        t_obj = tendencias.get(target.player.id)
-        if t_obj and t_obj.direction == "up":
-            st.caption("💡 Su valor está subiendo: si lo quieres, fíchalo antes de que suba más.")
-        if fit == "NO_ENCAJA":
-            st.info("Puede ser buen jugador, pero **ahora mismo no te aporta**: ya vas cubierto "
-                    "en esa posición. Fíchalo solo si vendes al que desplaza.")
-
-        st.markdown("---")
-        st.markdown("**Simula tu puja:**")
-        bid = st.number_input("¿Cuánto vas a pujar?", min_value=0, value=int(adv.max_buy),
-                              step=100_000, format="%d")
-        if bid > adv.max_buy:
-            st.warning(f"Ojo: estás por encima de la puja máxima recomendada ({fmt_eur(adv.max_buy)}).")
-        plan = advisor.bid_plan(target, bid, disponible, squad_scores)
-
-        if plan.substitute_out:
-            st.write(f"↔️ En su puesto desplazaría a **{plan.substitute_out.player.nickname}** "
-                     f"(score {plan.substitute_out.score}).")
-        if plan.sell_substitute and plan.substitute_out:
-            st.write(f"💡 Conviene **vender a {plan.substitute_out.player.nickname}** "
-                     f"(mínimo a aceptar {fmt_eur(advisor.sell_advice(plan.substitute_out).min_accept)}).")
-        if plan.extra_sells:
-            extra = ", ".join(s.player.nickname for s in plan.extra_sells)
-            st.write(f"➕ Aún faltaría dinero: vende además **{extra}**.")
-
-        if plan.feasible:
-            st.success(f"✅ Viable. Dinero que te quedaría: **{fmt_eur(plan.cash_final)}**"
-                       + ("" if not (plan.sell_substitute or plan.extra_sells) else " (tras esas ventas)"))
-        else:
-            st.error(f"❌ No te llega ni vendiendo. Te faltarían {fmt_eur(-plan.cash_final)}.")
-
-        st.markdown("**Registrar:**")
-        r1, r2 = st.columns(2)
-        if r1.button("📌 Anotar puja (dinero retenido)", use_container_width=True):
-            c = db.connect(); team_state.add_bid(c, uid, target.player.id, bid); c.close()
-            st.success("Puja anotada."); st.rerun()
-        clausula = st.number_input("Cláusula al comprarlo", min_value=0,
-                                   value=int(adv.suggested_clause), step=100_000, format="%d")
-        if r2.button("✅ Registrar compra efectuada", type="primary", use_container_width=True):
-            c = db.connect()
-            team_state.remove_bid(c, uid, target.player.id)
-            nuevo = team_state.buy_player(c, uid, target.player.id, bid, clause=clausula or None)
-            c.close()
-            st.success(f"Fichado {target.player.nickname}. Dinero: {fmt_eur(nuevo)}")
-            st.rerun()
-
-# --- Dinero (escenarios + pujas + ventas) ---
-if page == "💰 Dinero":
-    st.subheader("Tu dinero")
-    m1, m2 = st.columns(2)
-    m1.metric("💼 Valor de tu plantilla", fmt_eur(bv.valor_plantilla),
-              help="Suma del valor de mercado de todos tus jugadores y entrenador.")
-    m2.metric("💰 Dinero para gastar", fmt_eur(bv.para_gastar),
-              help="El total que te da LaLiga para fichar (lo que pones en la barra lateral).")
-    m3, m4 = st.columns(2)
-    m3.metric("📌 En pujas", ("− " + fmt_eur(bv.en_pujas)) if bv.en_pujas else "0 €",
-              help="Suma de tus pujas activas (dinero retenido).")
-    m4.metric("✅ Disponible", fmt_eur(bv.disponible),
-              help="Dinero para gastar menos lo que tienes en pujas.")
-    if bv.disponible < 0:
-        st.warning("Tus pujas superan tu dinero para gastar: revisa importes.")
-
-    st.markdown("### 📌 Pujas activas (dinero retenido)")
-    st.caption("Edita la puja si la cambiaste; pulsa ✅ Comprado si te lo llevaste "
-               "(entra en tu plantilla y se resta el dinero).")
-    if active_bids:
-        for pid, amount in active_bids.items():
-            nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
-            st.markdown(f"**{nm}**")
-            e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
-            nuevo = e0.number_input("Puja (€)", min_value=0, value=int(amount), step=100_000,
-                                    format="%d", key=f"bidamt_{pid}", label_visibility="collapsed")
-            if e1.button("✅ Comprado", key=f"buy_{pid}", use_container_width=True):
-                c = db.connect()
-                team_state.remove_bid(c, uid, pid)
-                team_state.buy_player(c, uid, pid, nuevo)
-                c.close(); st.rerun()
-            if e2.button("💾 Guardar", key=f"savebid_{pid}", use_container_width=True):
-                c = db.connect(); team_state.add_bid(c, uid, pid, nuevo); c.close(); st.rerun()
-            if e3.button("🗑️", key=f"delbid_{pid}", use_container_width=True):
-                c = db.connect(); team_state.remove_bid(c, uid, pid); c.close(); st.rerun()
-            st.divider()
-    else:
-        st.caption("No tienes pujas anotadas. Anótalas desde la pestaña 🔎 Fichajes.")
-
-    st.markdown("### 🏷️ Jugadores que tienes en venta")
-    st.caption("Edita el precio si lo cambiaste; pulsa ✅ Vendido cuando aceptes una "
-               "oferta (sale de tu plantilla y se suma el dinero).")
-    if active_listings:
-        for pid, ask in active_listings.items():
-            s = score_por_id.get(pid)
-            nm = players_by_id[pid].nickname if pid in players_by_id else f"#{pid}"
-            minimo = advisor.sell_advice(s).min_accept if s else 0
-            st.markdown(f"**{nm}** · mínimo a aceptar {fmt_eur(minimo)}")
-            e0, e1, e2, e3 = st.columns([3, 2, 2, 1])
-            nuevo = e0.number_input("Precio (€)", min_value=0, value=int(ask), step=100_000,
-                                    format="%d", key=f"askamt_{pid}", label_visibility="collapsed")
-            if e1.button("✅ Vendido", key=f"sold_{pid}", use_container_width=True):
-                c = db.connect()
-                team_state.remove_listing(c, uid, pid)
-                team_state.sell_player(c, uid, pid, nuevo)
-                c.close(); st.rerun()
-            if e2.button("💾 Guardar", key=f"savelist_{pid}", use_container_width=True):
-                c = db.connect(); team_state.add_listing(c, uid, pid, nuevo); c.close(); st.rerun()
-            if e3.button("🗑️", key=f"dellist_{pid}", use_container_width=True):
-                c = db.connect(); team_state.remove_listing(c, uid, pid); c.close(); st.rerun()
-            st.divider()
-    else:
-        st.caption("No tienes jugadores en venta. Ponlos en venta desde la pestaña 🧮 Tu plantilla.")
 
 # --- Explorar ---
 if page == "📋 Explorar":
