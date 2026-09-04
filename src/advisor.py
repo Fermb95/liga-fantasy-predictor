@@ -20,6 +20,47 @@ from .engine import PlayerScore
 
 # Titulares típicos por posición (para juzgar si un fichaje aporta o es suplente).
 STARTERS_BY_POS = {1: 1, 2: 4, 3: 4, 4: 2}  # POR, DEF, MED, DEL
+POS_NOMBRE = {1: "Portería", 2: "Defensa", 3: "Medio", 4: "Delantera"}
+
+
+@dataclass
+class PositionStat:
+    position_id: int
+    count: int            # cuántos tienes en esa posición
+    need: int             # titulares típicos
+    avg_starters: float   # score medio de tus mejores (los que serían titulares)
+    level: str            # 🔴 falta fondo / 🟠 floja / 🟡 correcta / 🟢 fuerte
+
+
+def position_summary(squad_scores: list[PlayerScore]) -> list[PositionStat]:
+    """Fuerza de tu plantilla por posición: dónde vas sobrado y dónde reforzar."""
+    por_pos: dict[int, list[float]] = {1: [], 2: [], 3: [], 4: []}
+    for s in squad_scores:
+        if s.player.position_id in por_pos:
+            por_pos[s.player.position_id].append(s.score)
+    out: list[PositionStat] = []
+    for pos in (1, 2, 3, 4):
+        vals = sorted(por_pos[pos], reverse=True)
+        need = STARTERS_BY_POS[pos]
+        count = len(vals)
+        titulares = vals[:need]
+        avg = round(sum(titulares) / len(titulares), 1) if titulares else 0.0
+        if count < need:
+            level = "🔴 falta fondo"
+        elif avg < 45:
+            level = "🟠 floja"
+        elif avg < 65:
+            level = "🟡 correcta"
+        else:
+            level = "🟢 fuerte"
+        out.append(PositionStat(pos, count, need, avg, level))
+    return out
+
+
+def refuerzos_sugeridos(squad_scores: list[PlayerScore]) -> list[int]:
+    """Ids de posición donde conviene reforzar (falta fondo o línea floja)."""
+    return [p.position_id for p in position_summary(squad_scores)
+            if p.level in ("🔴 falta fondo", "🟠 floja")]
 
 
 # ---- Venta ---------------------------------------------------------------

@@ -4,6 +4,20 @@ from src.api_client import Player
 from src.engine import PlayerScore
 
 
+def test_position_summary_niveles():
+    squad = [ps(1, 90, 5_000_000, pos=1)]                       # 1 portero bueno
+    squad += [ps(10 + i, 80, 5_000_000, pos=2) for i in range(4)]  # 4 defensas fuertes
+    squad += [ps(20 + i, 30, 5_000_000, pos=3) for i in range(2)]  # solo 2 medios (falta fondo, need 4)
+    # sin delanteros
+    stats = {p.position_id: p for p in advisor.position_summary(squad)}
+    assert stats[1].level == "🟢 fuerte"
+    assert stats[2].level == "🟢 fuerte"
+    assert stats[3].level == "🔴 falta fondo"      # 2 < 4 titulares
+    assert stats[4].level == "🔴 falta fondo"      # 0 delanteros
+    refuerzos = advisor.refuerzos_sugeridos(squad)
+    assert 3 in refuerzos and 4 in refuerzos and 2 not in refuerzos
+
+
 def ps(pid, score, mv, pos=3):
     p = Player(id=pid, nickname=f"J{pid}", position_id=pos, team_id=1, market_value=mv,
                points=score, average_points=5, last_season_points=0, status="ok",

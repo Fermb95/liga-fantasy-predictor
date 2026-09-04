@@ -544,6 +544,12 @@ if page == "🛒 Mi mercado":
             c = db.connect(); team_state.set_market_players(c, uid, sel_mm_ids); c.close()
             market_ids = sel_mm_ids
 
+        if squad_scores:
+            _ref = advisor.refuerzos_sugeridos(squad_scores)
+            if _ref:
+                st.caption("🎯 Dónde te conviene reforzar: **"
+                           + ", ".join(advisor.POS_NOMBRE[p] for p in _ref) + "**")
+
         if not sel_mm_ids:
             st.info("Aún no has añadido nada. Escribe arriba los jugadores de tu mercado.")
         else:
@@ -881,6 +887,15 @@ if page == "🧮 Tu plantilla":
         m1.metric("Valor de tu plantilla", fmt_eur(valor))
         m2.metric("Disponible", fmt_eur(disponible))
         m3.metric("A vender (aviso)", len(rec.vender))
+
+        st.markdown("**Tu equipo por posición** (dónde vas fuerte y dónde reforzar)")
+        resumen = advisor.position_summary(squad_scores)
+        st.dataframe(pd.DataFrame([{
+            "Posición": advisor.POS_NOMBRE[p.position_id],
+            "Tienes": p.count,
+            "Titulares": p.need,
+            "Nivel (media titulares)": f"{p.level} ({p.avg_starters})",
+        } for p in resumen]), use_container_width=True, hide_index=True)
 
         filas = []
         for s in sorted(squad_scores, key=lambda x: x.score, reverse=True):
