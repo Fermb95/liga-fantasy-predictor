@@ -45,6 +45,27 @@ def test_excluye_los_que_ya_tienes_y_lesionados():
     assert r == []
 
 
+def test_bid_aware_espera_si_pujas_por_mejor():
+    squad = _squad()
+    mejor = ps(50, 90, 5_000_000, pos=4)   # gran delantero por el que YA pujas
+    peor = ps(51, 60, 5_000_000, pos=4)    # delantero peor que te sale en el mercado
+    bids = {50: (mejor, 5_000_000)}
+    r = mymarket.rank_market([mejor, peor], squad, disponible=50_000_000, bids=bids)
+    v = {p.ps.player.id: p for p in r}
+    assert v[50].verdict == "📌 Pujando" and v[50].already_bidding
+    assert v[50].bid_amount == 5_000_000
+    assert v[51].verdict == "🟡 Espera"       # no fiches el peor, ya vas a por el mejor
+    assert v[51].note
+    assert r[0].ps.player.id == 50            # el mejor (que ya pujas) va primero
+
+
+def test_sin_bids_funciona_igual():
+    squad = _squad()
+    t = [ps(100, 90, 3_000_000, pos=4, signal="CHOLLO")]
+    r = mymarket.rank_market(t, squad, disponible=10_000_000)   # bids por defecto None
+    assert r[0].verdict == "🟢 Fichar" and not r[0].already_bidding
+
+
 def test_no_te_llega_marcado():
     squad = _squad()
     mercado = [ps(300, 95, 300_000_000, pos=4)]            # imposible ni vendiendo

@@ -475,6 +475,12 @@ def next_opp_txt(team_id: int) -> str:
     return f"{loc} {team_name(teams, rid)}"
 
 
+def proximos_txt(team_id: int, n: int = 3) -> str:
+    op = engine.next_opponents(team_id, fixtures, n=n)
+    partes = [("🏠" if es_local else "✈️") + team_name(teams, rid)[:10] for rid, es_local, _ in op]
+    return " · ".join(partes)
+
+
 def trend_line(pid: int) -> str:
     t = tendencias.get(pid)
     if not t or t.direction == "new":
@@ -550,26 +556,68 @@ if page == "🛒 Mi mercado":
                 st.caption("🎯 Dónde te conviene reforzar: **"
                            + ", ".join(advisor.POS_NOMBRE[p] for p in _ref) + "**")
 
-        if not sel_mm_ids:
+        # Analiza tu mercado + los jugadores por los que YA pujas (para comparar).
+        analisis_ids = set(sel_mm_ids) | set(active_bids)
+        if not analisis_ids:
             st.info("Aún no has añadido nada. Escribe arriba los jugadores de tu mercado.")
         else:
-            market_scores = [score_por_id[i] for i in sel_mm_ids if i in score_por_id]
-            ranking = mymarket.rank_market(market_scores, squad_scores, disponible, tendencias)
+            bids_dict = {pid: (score_por_id[pid], amt) for pid, amt in active_bids.items()
+                         if pid in score_por_id}
+            market_scores = [score_por_id[i] for i in analisis_ids if i in score_por_id]
+            ranking = mymarket.rank_market(market_scores, squad_scores, disponible,
+                                           tendencias, bids_dict)
             fichar = [r for r in ranking if r.verdict == "🟢 Fichar"]
             if fichar:
-                st.success("**Compra primero:** " + ", ".join(
+                st.success("**Compra primero (te llega ya):** " + ", ".join(
                     f"{r.ps.player.nickname} (hasta {fmt_eur(r.max_buy)})" for r in fichar[:3]))
+
+            st.markdown("**Ranking de preferencia** — según análisis del jugador, calendario, "
+                        "tu plantilla, tu dinero y tus pujas activas:")
+            filas = []
             for r in ranking:
                 p = r.ps.player
-                _t = _trend_txt(tendencias, p.id)
-                _o = next_opp_txt(p.team_id)
-                st.markdown(
-                    f"**{r.verdict} · {p.nickname}** · {POS.get(p.position_id,'?')} · "
-                    f"{team_name(teams, p.team_id)} · {fmt_eur(p.market_value)}  \n"
-                    f"Puja máx **{fmt_eur(r.max_buy)}** · encaje {r.fit} · {r.expected} pts esp."
-                    + (f" · {_t}" if _t else "") + (f" · 📅 {_o}" if _o else ""))
+                afford_txt = {"te_llega": "✅ te llega", "vendiendo": "↔️ vendiendo",
+                              "no_te_llega": "⛔ no llega"}[r.afford]
+                filas.append({
+                    "Prioridad": r.priority,
+                    "Estado": r.verdict + (f" ({fmt_eur(r.bid_amount)})" if r.already_bidding else ""),
+                    "Jugador": p.nickname,
+                    "Pos": POS.get(p.position_id, "?"),
+                    "Precio": fmt_eur(p.market_value),
+                    "Puja máx": fmt_eur(r.max_buy),
+                    "¿Te llega?": afford_txt,
+                    "Score": r.ps.score,
+                    "Pts esp.": r.expected,
+                    "Encaje": r.fit,
+                    "Tend.": _trend_txt(tendencias, p.id),
+                    "Próximos": proximos_txt(p.team_id),
+                    "Aviso": r.note,
+                })
+            st.dataframe(pd.DataFrame(filas), use_container_width=True, hide_index=True,
+                         column_config={"Prioridad": st.column_config.ProgressColumn(
+                             "Prioridad", min_value=0, max_value=100, format="%.0f")})
+            st.caption("Estado: 📌 pujando · 🟢 fichar (te llega) · 🟠 sí, pero vende · "
+                       "🟡 espera/dudoso · 🔴 pasa · ⛔ no te llega. "
+                       "**Espera** = ya pujas por uno mejor en esa posición.")
+
+            st.markdown("**Acción rápida** (pujar / marcar comprado):")
+            for r in ranking:
+                p = r.ps.player
+                extra = ""
+                if r.note:
+                    extra = f" · ⚠️ {r.note}"
+                elif r.afford == "vendiendo":
+                    plan = advisor.bid_plan(r.ps, r.max_buy, disponible, squad_scores)
+                    vende = [x.player.nickname for x in (
+                        ([plan.substitute_out] if plan.sell_substitute and plan.substitute_out else [])
+                        + plan.extra_sells)]
+                    if vende:
+                        extra = " · ↔️ para ficharlo vende: " + ", ".join(vende)
+                st.markdown(f"**{r.verdict} · {p.nickname}** ({POS.get(p.position_id,'?')}) · "
+                            f"puja máx {fmt_eur(r.max_buy)}{extra}")
                 a, b, cc = st.columns([2, 1, 1])
-                bid = a.number_input("Tu puja", min_value=0, value=int(r.max_buy), step=100_000,
+                bid = a.number_input("Tu puja", min_value=0,
+                                     value=int(r.bid_amount or r.max_buy), step=100_000,
                                      format="%d", key=f"mmbid_{p.id}", label_visibility="collapsed")
                 if b.button("📌 Pujar", key=f"mmpuja_{p.id}", use_container_width=True):
                     c = db.connect(); team_state.add_bid(c, uid, p.id, bid); c.close(); st.rerun()
@@ -579,16 +627,7 @@ if page == "🛒 Mi mercado":
                     team_state.buy_player(c, uid, p.id, bid)
                     team_state.remove_market_player(c, uid, p.id)
                     c.close(); st.rerun()
-                if r.afford == "vendiendo":
-                    plan = advisor.bid_plan(r.ps, r.max_buy, disponible, squad_scores)
-                    vende = [x.player.nickname for x in (
-                        ([plan.substitute_out] if plan.sell_substitute and plan.substitute_out else [])
-                        + plan.extra_sells)]
-                    if vende:
-                        st.caption("↔️ Para ficharlo tendrías que vender: " + ", ".join(vende))
                 st.divider()
-            st.caption("Veredictos: 🟢 fichar (te llega) · 🟠 sí, pero vende antes · 🟡 dudoso · "
-                       "🔴 pasa · ⛔ no te llega.")
 
     # ===================== VENDER =====================
     elif modo == "🔴 Vender":
