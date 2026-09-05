@@ -563,9 +563,16 @@ if page == "🛒 Mi mercado":
         else:
             bids_dict = {pid: (score_por_id[pid], amt) for pid, amt in active_bids.items()
                          if pid in score_por_id}
+            listings_dict = {pid: (score_por_id[pid], ask)
+                             for pid, ask in active_listings.items() if pid in score_por_id}
             market_scores = [score_por_id[i] for i in analisis_ids if i in score_por_id]
             ranking = mymarket.rank_market(market_scores, squad_scores, disponible,
-                                           tendencias, bids_dict)
+                                           tendencias, bids_dict, listings_dict)
+
+            if listings_dict:
+                _liquidez = sum(ask for _s, ask in listings_dict.values())
+                st.caption(f"💧 Si vendes lo que tienes en venta liberas **{fmt_eur(_liquidez)}** "
+                           f"→ tendrías **{fmt_eur(disponible + _liquidez)}** para pujar.")
             fichar = [r for r in ranking if r.verdict == "🟢 Fichar"]
             if fichar:
                 st.success("**Compra primero (te llega ya):** " + ", ".join(
@@ -597,8 +604,22 @@ if page == "🛒 Mi mercado":
                          column_config={"Prioridad": st.column_config.ProgressColumn(
                              "Prioridad", min_value=0, max_value=100, format="%.0f")})
             st.caption("Estado: 📌 pujando · 🟢 fichar (te llega) · 🟠 sí, pero vende · "
-                       "🟡 espera/dudoso · 🔴 pasa · ⛔ no te llega. "
+                       "🟡 espera / mejor quédate el tuyo / dudoso · 🔴 pasa · ⛔ no te llega. "
                        "**Espera** = ya pujas por uno mejor en esa posición.")
+
+            # ---- ¿Merece la pena vender lo que tienes listado? ----
+            if listings_dict:
+                revs = mymarket.review_listings(listings_dict, market_scores, disponible)
+                st.markdown("**🏷️ Lo que tienes a la venta** — ¿vender o quedártelo?")
+                for rv in revs:
+                    p = rv.ps.player
+                    st.markdown(
+                        f"**{rv.verdict} · {p.nickname}** ({POS.get(p.position_id,'?')}, "
+                        f"score {rv.ps.score}) · en venta por {fmt_eur(rv.ask_price)}  \n"
+                        f"↳ {rv.note}")
+                st.caption("🔁 = en tu mercado hay algo mejor que puedes pagar al venderlo · "
+                           "🔒 = nada del mercado lo mejora por ese precio.")
+                st.divider()
 
             st.markdown("**Acción rápida** (pujar / marcar comprado):")
             for r in ranking:

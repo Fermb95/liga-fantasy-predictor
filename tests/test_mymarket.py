@@ -71,3 +71,56 @@ def test_no_te_llega_marcado():
     mercado = [ps(300, 95, 300_000_000, pos=4)]            # imposible ni vendiendo
     r = mymarket.rank_market(mercado, squad, disponible=1_000_000)
     assert r[0].verdict == "⛔ No te llega"
+
+
+def test_venta_libera_dinero_para_fichar():
+    squad = _squad()
+    objetivo = ps(400, 90, 12_000_000, pos=4, signal="CHOLLO")  # cuesta más de lo que tienes
+    en_venta = ps(30, 40, 10_000_000, pos=4)   # lo tienes a la venta por 10M
+    listings = {30: (en_venta, 10_000_000)}
+    # Con 5M no llega; vendiendo el listado (5+10=15M) sí.
+    r = mymarket.rank_market([objetivo], squad, disponible=5_000_000, listings=listings)
+    v = {p.ps.player.id: p for p in r}
+    assert v[400].afford == "vendiendo"        # te llega gracias a la venta
+    assert v[400].verdict in ("🟢 Fichar", "🟠 Sí, pero vende")
+
+
+def test_no_fichar_peor_que_lo_que_vendes():
+    squad = _squad()
+    en_venta = ps(30, 90, 8_000_000, pos=4)    # gran delantero que tienes en venta
+    peor = ps(500, 60, 5_000_000, pos=4)       # del mercado, peor que el que vendes
+    listings = {30: (en_venta, 8_000_000)}
+    r = mymarket.rank_market([peor], squad, disponible=50_000_000, listings=listings)
+    v = {p.ps.player.id: p for p in r}
+    assert v[500].verdict == "🟡 Mejor quédate el tuyo"
+    assert v[500].note
+
+
+def test_fichar_mejora_a_lo_que_vendes():
+    squad = _squad()
+    en_venta = ps(30, 55, 5_000_000, pos=4)    # flojo, lo tienes a la venta
+    mejor = ps(600, 90, 5_000_000, pos=4, signal="CHOLLO")  # del mercado, mucho mejor
+    listings = {30: (en_venta, 5_000_000)}
+    r = mymarket.rank_market([mejor], squad, disponible=50_000_000, listings=listings)
+    v = {p.ps.player.id: p for p in r}
+    assert v[600].upgrades_listing
+    assert "en venta" in v[600].note
+
+
+def test_review_listings_vender_si_hay_mejor():
+    en_venta = ps(30, 55, 5_000_000, pos=4)
+    mercado = [ps(600, 90, 5_000_000, pos=4), ps(601, 20, 3_000_000, pos=4)]
+    listings = {30: (en_venta, 5_000_000)}
+    rev = mymarket.review_listings(listings, mercado, disponible=5_000_000)
+    assert len(rev) == 1
+    assert rev[0].verdict == "🔁 Vender y fichar mejor"
+    assert rev[0].better and rev[0].better[0].player.id == 600
+
+
+def test_review_listings_quedatelo_si_nada_mejor():
+    en_venta = ps(30, 90, 8_000_000, pos=4)    # ya es bueno
+    mercado = [ps(700, 60, 5_000_000, pos=4)]  # peor que él
+    listings = {30: (en_venta, 8_000_000)}
+    rev = mymarket.review_listings(listings, mercado, disponible=50_000_000)
+    assert rev[0].verdict == "🔒 Quédatelo"
+    assert rev[0].better == []
