@@ -488,6 +488,7 @@ def trend_line(pid: int) -> str:
     signo = "+" if t.change > 0 else ""
     return f"{t.emoji} valor {t.label} ({signo}{t.pct:.1f}%)"
 
+# Mi mercado ahora considera pujas + ventas (rank_market con `listings`).
 # Modelo de dinero (idéntico a LaLiga): para_gastar - pujas = disponible.
 valor_plantilla = sum(mv_by_id.get(pid, 0) for pid in squad_ids)
 bv = team_state.budget_view(budget, active_bids, valor_plantilla)
